@@ -45,7 +45,8 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        VM_NAME="exeunt-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+        HASH=$(echo "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" | sha256sum | head -c 6)
+        VM_NAME="exeunt-${HASH}"
         echo "Creating VM: $VM_NAME"
         ssh exe.dev new --name="$VM_NAME" --json --no-email
         echo "vm_name=$VM_NAME" >> "$GITHUB_OUTPUT"
