@@ -1,0 +1,56 @@
+name: 'Teardown exe.dev Runner'
+description: 'Destroys an exe.dev VM provisioned by setup-exe-runner'
+
+inputs:
+  exe-ssh-key:
+    description: 'SSH private key for exe.dev (ed25519)'
+    required: true
+  vm-name:
+    description: 'Name of the exe.dev VM to destroy'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup SSH for exe.dev
+      shell: bash
+      env:
+        EXE_SSH_KEY: ${{ inputs.exe-ssh-key }}
+      run: |
+        set -euo pipefail
+        mkdir -p ~/.ssh
+        chmod 700 ~/.ssh
+        printf '%s\n' "$EXE_SSH_KEY" > ~/.ssh/exe_dev_key
+        chmod 600 ~/.ssh/exe_dev_key
+        {
+          echo "Host exe.dev *.exe.xyz"
+          echo "  IdentitiesOnly yes"
+          echo "  IdentityFile ~/.ssh/exe_dev_key"
+          echo "  StrictHostKeyChecking accept-new"
+          echo "  UserKnownHostsFile ~/.ssh/known_hosts"
+        } >> ~/.ssh/config
+        chmod 600 ~/.ssh/config
+
+    - name: Destroy exe.dev VM
+      shell: bash
+      env:
+        VM_NAME: ${{ inputs.vm-name }}
+      run: |
+        set -euo pipefail
+
+        if [ -z "$VM_NAME" ]; then
+          echo "::warning::No VM name provided, skipping teardown"
+          exit 0
+        fi
+
+        echo "Destroying VM: $VM_NAME"
+        ssh exe.dev rm "$VM_NAME" || echo "::warning::Failed to destroy VM $VM_NAME (may already be gone)"
+
+        # Verify removal
+        echo "Verifying VM removal..."
+        REMAINING=$(ssh exe.dev ls --json | jq -r ".vms[] | select(.vm_name == \"$VM_NAME\") | .vm_name")
+        if [ -n "$REMAINING" ]; then
+          echo "::warning::VM $VM_NAME still exists after rm"
+        else
+          echo "VM $VM_NAME destroyed successfully"
+        fi
