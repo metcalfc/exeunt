@@ -96,8 +96,8 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/exeunt-runner:latest
             ghcr.io/${{ github.repository_owner }}/exeunt-runner:v${{ steps.runner-version.outputs.version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository_owner }}/exeunt-runner:buildcache
+          cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner }}/exeunt-runner:buildcache,mode=max
 
   teardown:
     name: Teardown exe.dev builder
