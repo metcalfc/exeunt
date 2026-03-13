@@ -21,25 +21,10 @@ jobs:
       - name: Check runner image compatibility
         run: bash scripts/check-runner-image.sh --verbose
 
-  provision:
-    name: Provision exe.dev builder
-    needs: check
-    runs-on: ubuntu-latest
-    outputs:
-      vm_name: ${{ steps.setup.outputs.vm_name }}
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: ./setup-exe-runner
-        id: setup
-        with:
-          exe-ssh-key: ${{ secrets.EXE_SSH_KEY }}
-          github-token: ${{ secrets.GH_RUNNER_TOKEN }}
-
   build:
     name: Build and push runner image
-    needs: provision
-    runs-on: [self-hosted, exe]
+    needs: check
+    runs-on: [self-hosted, exe-builder]
     permissions:
       contents: read
       packages: write
@@ -98,16 +83,3 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/exeunt-runner:v${{ steps.runner-version.outputs.version }}
           cache-from: type=registry,ref=ghcr.io/${{ github.repository_owner }}/exeunt-runner:buildcache
           cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner }}/exeunt-runner:buildcache,mode=max
-
-  teardown:
-    name: Teardown exe.dev builder
-    runs-on: ubuntu-latest
-    needs: [provision, build]
-    if: always()
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: ./teardown-exe-runner
-        with:
-          exe-ssh-key: ${{ secrets.EXE_SSH_KEY }}
-          vm-name: ${{ needs.provision.outputs.vm_name }}
