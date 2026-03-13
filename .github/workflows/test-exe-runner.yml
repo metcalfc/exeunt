@@ -10,7 +10,7 @@ jobs:
     outputs:
       vm_name: ${{ steps.setup.outputs.vm_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: ./setup-exe-runner
         id: setup
@@ -33,7 +33,7 @@ jobs:
           echo "Disk: $(df -h / | tail -1 | awk '{print $4}') free"
           echo "User: $(whoami)"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Verify checkout
         run: |
@@ -54,7 +54,7 @@ jobs:
     needs: [provision, test]
     if: always()
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: ./teardown-exe-runner
         with:

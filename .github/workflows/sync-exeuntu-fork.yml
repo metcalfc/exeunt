@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Clone fork
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: metcalfc/exeuntu
           token: ${{ secrets.GH_RUNNER_TOKEN }}
