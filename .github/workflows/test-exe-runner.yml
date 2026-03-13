@@ -48,6 +48,25 @@ jobs:
           docker run --rm alpine:latest echo "Docker works on exe.dev!"
           docker version --format '{{.Server.Version}}'
 
+      - name: Toolchain smoke test
+        run: |
+          echo "=== Mise toolchains ==="
+          mise doctor
+          echo "Go:          $(go version)"
+          echo "Python:      $(python --version)"
+          echo "Ruby:        $(ruby --version)"
+          echo "Rust:        $(rustc --version)"
+          echo "Node:        $(node --version)"
+          echo "uv:          $(uv --version)"
+          echo "ruff:        $(ruff --version)"
+          echo "buf:         $(buf --version)"
+          echo "golangci-lint: $(golangci-lint --version)"
+          echo "actionlint:  $(actionlint --version)"
+          echo "lefthook:    $(lefthook version)"
+          echo "markdownlint: $(markdownlint --version)"
+          echo "goimports:   $(goimports -h 2>&1 | head -1)"
+          echo "govulncheck: $(govulncheck --version)"
+
   teardown:
     name: Teardown exe.dev runner
     runs-on: ubuntu-latest
