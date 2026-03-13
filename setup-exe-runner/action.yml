@@ -78,12 +78,19 @@ runs:
         # Build labels JSON array
         LABELS_JSON=$(echo "$RUNNER_LABELS" | tr ',' '\n' | jq -R . | jq -s .)
 
-        JIT_RESPONSE=$(curl -sf -X POST \
+        HTTP_CODE=$(curl -s -o /tmp/jit_response.json -w '%{http_code}' -X POST \
           -H "Authorization: Bearer $GITHUB_TOKEN" \
           -H "Accept: application/vnd.github+json" \
           -H "X-GitHub-Api-Version: 2022-11-28" \
           "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runners/generate-jitconfig" \
           -d "{\"name\":\"${VM_NAME}\",\"runner_group_id\":1,\"labels\":${LABELS_JSON},\"work_folder\":\"_work\"}")
+        JIT_RESPONSE=$(cat /tmp/jit_response.json)
+
+        if [ "$HTTP_CODE" != "201" ]; then
+          echo "::error::JIT config API returned HTTP $HTTP_CODE"
+          echo "$JIT_RESPONSE" >&2
+          exit 1
+        fi
 
         JIT_CONFIG=$(echo "$JIT_RESPONSE" | jq -r '.encoded_jit_config')
 
@@ -104,15 +111,16 @@ runs:
         GITHUB_TOKEN: ${{ inputs.github-token }}
       run: |
         set -euo pipefail
-        RUNNER_URL=$(curl -sf \
+        DOWNLOADS_RESPONSE=$(curl -sS \
           -H "Authorization: Bearer $GITHUB_TOKEN" \
           -H "Accept: application/vnd.github+json" \
           -H "X-GitHub-Api-Version: 2022-11-28" \
-          "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runners/downloads" \
-          | jq -r '.[] | select(.os == "linux" and .architecture == "x64") | .download_url')
+          "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runners/downloads")
+        RUNNER_URL=$(echo "$DOWNLOADS_RESPONSE" | jq -r '.[] | select(.os == "linux" and .architecture == "x64") | .download_url')
 
-        if [ -z "$RUNNER_URL" ]; then
+        if [ -z "$RUNNER_URL" ] || [ "$RUNNER_URL" = "null" ]; then
           echo "::error::Failed to get runner download URL"
+          echo "$DOWNLOADS_RESPONSE" >&2
           exit 1
         fi
 
