@@ -58,7 +58,7 @@ runs:
         # Wait for VM to be SSH-accessible
         echo "Waiting for VM SSH access..."
         for i in $(seq 1 15); do
-          if ssh -o ConnectTimeout=5 "exedev@${VM_NAME}.exe.xyz" true 2>/dev/null; then
+          if ssh -o ConnectTimeout=5 "${VM_NAME}.exe.xyz" true 2>/dev/null; then
             echo "VM is SSH-accessible"
             break
           fi
@@ -117,14 +117,14 @@ runs:
         set -euo pipefail
         echo "Starting runner on ${VM_NAME}.exe.xyz"
 
-        ssh "exedev@${VM_NAME}.exe.xyz" bash -s -- "$JIT_CONFIG" << 'REMOTE'
+        ssh "${VM_NAME}.exe.xyz" bash -s -- "$JIT_CONFIG" << 'REMOTE'
         set -euo pipefail
         JIT_CONFIG="$1"
 
-        cd ~/actions-runner
+        cd /home/exedev/actions-runner
 
-        echo "Starting runner with JIT config..."
-        nohup ./run.sh --jitconfig "$JIT_CONFIG" > runner.log 2>&1 &
+        echo "Starting runner as exedev with JIT config..."
+        sudo -u exedev nohup ./run.sh --jitconfig "$JIT_CONFIG" > runner.log 2>&1 &
         disown
 
         # Wait for runner to connect to GitHub
