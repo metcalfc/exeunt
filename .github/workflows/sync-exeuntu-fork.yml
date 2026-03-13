@@ -1,0 +1,113 @@
+name: Sync exeuntu fork
+
+on:
+  schedule:
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    name: Sync fork with upstream
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone fork
+        uses: actions/checkout@v4
+        with:
+          repository: metcalfc/exeuntu
+          token: ${{ secrets.GH_RUNNER_TOKEN }}
+          fetch-depth: 0
+
+      - name: Add upstream remote
+        run: git remote add upstream https://github.com/boldsoftware/exeuntu.git
+
+      - name: Fetch upstream
+        run: git fetch upstream main
+
+      - name: Check for meaningful changes
+        id: check-changes
+        run: |
+          set -euo pipefail
+
+          # Find commits on upstream that we don't have
+          NEW_COMMITS=$(git rev-list HEAD..upstream/main)
+          if [ -z "$NEW_COMMITS" ]; then
+            echo "No new upstream commits"
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Check if any commit touches files that matter (not just docs)
+          DOC_PATTERNS='README|LICENSE|\.md$|\.clabot|\.gitignore'
+          MEANINGFUL=false
+          for commit in $NEW_COMMITS; do
+            FILES=$(git diff-tree --no-commit-id --name-only -r "$commit")
+            if echo "$FILES" | grep -vqE "$DOC_PATTERNS"; then
+              MEANINGFUL=true
+              break
+            fi
+          done
+
+          if [ "$MEANINGFUL" = "true" ]; then
+            echo "Meaningful upstream changes detected"
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Only doc changes — skipping"
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Rebase onto upstream
+        id: rebase
+        if: steps.check-changes.outputs.has_changes == 'true'
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if git rebase upstream/main; then
+            echo "success=true" >> "$GITHUB_OUTPUT"
+            echo "Rebase succeeded"
+          else
+            git rebase --abort
+            echo "success=false" >> "$GITHUB_OUTPUT"
+            echo "::error::Rebase failed — manual intervention required"
+          fi
+
+      - name: Push rebased fork
+        if: steps.rebase.outputs.success == 'true'
+        run: git push --force-with-lease
+
+      - name: Trigger image build
+        if: steps.rebase.outputs.success == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_RUNNER_TOKEN }}
+        run: |
+          gh workflow run build-runner-image.yml \
+            --repo metcalfc/exeunt \
+            -f force=true
+
+      - name: Notify on rebase failure
+        if: steps.rebase.outputs.success == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GH_RUNNER_TOKEN }}
+        run: |
+          gh issue create \
+            --repo metcalfc/exeunt \
+            --title "exeuntu fork rebase failed — manual sync needed" \
+            --body "$(cat <<'EOF'
+          The daily sync of [metcalfc/exeuntu](https://github.com/metcalfc/exeuntu) failed to rebase onto upstream [boldsoftware/exeuntu](https://github.com/boldsoftware/exeuntu).
+
+          **Action required:** manually resolve conflicts and force-push the fork.
+
+          ```bash
+          cd /tmp && git clone git@github.com:metcalfc/exeuntu.git && cd exeuntu
+          git remote add upstream https://github.com/boldsoftware/exeuntu.git
+          git fetch upstream main
+          git rebase upstream/main
+          # resolve conflicts
+          git push --force-with-lease
+          ```
+
+          Triggered by: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EOF
+          )" \
+            --label "bug"
