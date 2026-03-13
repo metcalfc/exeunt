@@ -12,6 +12,10 @@ inputs:
     description: 'Comma-separated runner labels (self-hosted is always included automatically)'
     required: false
     default: 'exe'
+  image:
+    description: 'Container image for exe.dev VM'
+    required: false
+    default: 'ghcr.io/metcalfc/exeunt-runner:latest'
 
 outputs:
   vm_name:
@@ -48,7 +52,7 @@ runs:
         HASH=$(echo "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" | sha256sum | head -c 6)
         VM_NAME="exeunt-${HASH}"
         echo "Creating VM: $VM_NAME"
-        ssh exe.dev new --name="$VM_NAME" --json --no-email
+        ssh exe.dev new --name="$VM_NAME" --image="${{ inputs.image }}" --json --no-email
         echo "vm_name=$VM_NAME" >> "$GITHUB_OUTPUT"
 
         # Wait for VM to be SSH-accessible
@@ -104,49 +108,20 @@ runs:
         echo "::add-mask::$JIT_CONFIG"
         echo "encoded_jit_config=$JIT_CONFIG" >> "$GITHUB_OUTPUT"
 
-    - name: Get runner download URL
-      id: runner-url
-      shell: bash
-      env:
-        GITHUB_TOKEN: ${{ inputs.github-token }}
-      run: |
-        set -euo pipefail
-        DOWNLOADS_RESPONSE=$(curl -sS \
-          -H "Authorization: Bearer $GITHUB_TOKEN" \
-          -H "Accept: application/vnd.github+json" \
-          -H "X-GitHub-Api-Version: 2022-11-28" \
-          "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runners/downloads")
-        RUNNER_URL=$(echo "$DOWNLOADS_RESPONSE" | jq -r '.[] | select(.os == "linux" and .architecture == "x64") | .download_url')
-
-        if [ -z "$RUNNER_URL" ] || [ "$RUNNER_URL" = "null" ]; then
-          echo "::error::Failed to get runner download URL"
-          echo "$DOWNLOADS_RESPONSE" >&2
-          exit 1
-        fi
-
-        echo "Runner URL: $RUNNER_URL"
-        echo "runner_url=$RUNNER_URL" >> "$GITHUB_OUTPUT"
-
-    - name: Install and start runner on VM
+    - name: Start runner on VM
       shell: bash
       env:
         VM_NAME: ${{ steps.create-vm.outputs.vm_name }}
-        RUNNER_URL: ${{ steps.runner-url.outputs.runner_url }}
         JIT_CONFIG: ${{ steps.jit-config.outputs.encoded_jit_config }}
       run: |
         set -euo pipefail
-        echo "Installing runner on ${VM_NAME}.exe.xyz"
+        echo "Starting runner on ${VM_NAME}.exe.xyz"
 
-        ssh "${VM_NAME}.exe.xyz" bash -s -- "$RUNNER_URL" "$JIT_CONFIG" << 'REMOTE'
+        ssh "${VM_NAME}.exe.xyz" bash -s -- "$JIT_CONFIG" << 'REMOTE'
         set -euo pipefail
-        RUNNER_URL="$1"
-        JIT_CONFIG="$2"
+        JIT_CONFIG="$1"
 
-        mkdir -p ~/actions-runner && cd ~/actions-runner
-        echo "Downloading runner..."
-        curl -sL "$RUNNER_URL" -o runner.tar.gz
-        tar xzf runner.tar.gz
-        rm runner.tar.gz
+        cd ~/actions-runner
 
         echo "Starting runner with JIT config..."
         nohup ./run.sh --jitconfig "$JIT_CONFIG" > runner.log 2>&1 &
