@@ -1,5 +1,9 @@
 # exeunt
 
+<p align="center">
+  <img src="exeunt-pufferfish.png" alt="Three pufferfish heading for the exit" width="600">
+</p>
+
 *"Exeunt all."* — stage direction for when everyone leaves.
 
 Ephemeral [exe.dev](https://exe.dev) runners for GitHub Actions. VMs spin up, do the work, and exit. Hence the name.
