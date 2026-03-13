@@ -121,7 +121,7 @@ runs:
         set -euo pipefail
         JIT_CONFIG="$1"
 
-        cd ~/actions-runner
+        cd /home/exedev/actions-runner
 
         echo "Starting runner with JIT config..."
         nohup ./run.sh --jitconfig "$JIT_CONFIG" > runner.log 2>&1 &
