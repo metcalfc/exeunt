@@ -23,14 +23,7 @@ runs:
         printf '%s\n' "$EXE_SSH_KEY" > ~/.ssh/exe_dev_key
         chmod 600 ~/.ssh/exe_dev_key
         {
-          echo "Host exe.dev"
-          echo "  IdentitiesOnly yes"
-          echo "  IdentityFile ~/.ssh/exe_dev_key"
-          echo "  StrictHostKeyChecking accept-new"
-          echo "  UserKnownHostsFile ~/.ssh/known_hosts"
-          echo ""
-          echo "Host *.exe.xyz"
-          echo "  User exedev"
+          echo "Host exe.dev *.exe.xyz"
           echo "  IdentitiesOnly yes"
           echo "  IdentityFile ~/.ssh/exe_dev_key"
           echo "  StrictHostKeyChecking accept-new"
