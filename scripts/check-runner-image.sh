@@ -13,7 +13,8 @@ fi
 
 UPSTREAM_REPO="boldsoftware/exeuntu"
 UPSTREAM_RAW="https://raw.githubusercontent.com/${UPSTREAM_REPO}/main/Dockerfile"
-OUR_DOCKERFILE="$(cd "$(dirname "$0")/.." && pwd)/runner-image/Dockerfile"
+FORK_REPO="metcalfc/exeuntu"
+FORK_RAW="https://raw.githubusercontent.com/${FORK_REPO}/main/Dockerfile"
 IMAGE="ghcr.io/metcalfc/exeunt-runner"
 
 ERRORS=0
@@ -33,15 +34,6 @@ UPSTREAM=$(curl -fsSL "$UPSTREAM_RAW" 2>/dev/null) || {
 }
 
 if [[ -n "$UPSTREAM" ]]; then
-  # Check base image — our FROM must match upstream's final FROM
-  UPSTREAM_BASE=$(echo "$UPSTREAM" | grep -E '^FROM ' | tail -1 | awk '{print $2}')
-  OUR_BASE=$(grep -E '^FROM ' "$OUR_DOCKERFILE" | head -1 | awk '{print $2}')
-  if [[ "$OUR_BASE" == "$UPSTREAM_REPO" ]] || [[ "$OUR_BASE" == "docker.io/$UPSTREAM_REPO" ]]; then
-    ok "FROM references upstream image ($OUR_BASE)"
-  else
-    warn "FROM mismatch: ours=$OUR_BASE, expected=$UPSTREAM_REPO"
-  fi
-
   # Check user still exists and is named exedev
   if echo "$UPSTREAM" | grep -q 'usermod -l exedev'; then
     ok "Upstream still creates 'exedev' user"
@@ -116,40 +108,45 @@ if [[ -n "$LATEST_RUNNER" ]]; then
 fi
 
 echo ""
-echo "=== Local Dockerfile check ==="
+echo "=== Fork Dockerfile check ==="
 
-if [[ -f "$OUR_DOCKERFILE" ]]; then
-  ok "runner-image/Dockerfile exists"
+FORK=$(curl -fsSL "$FORK_RAW" 2>/dev/null) || {
+  fail "Could not fetch fork Dockerfile from ${FORK_RAW}"
+  FORK=""
+}
 
-  # Verify it doesn't override CMD (exe.dev needs base image's init)
-  if grep -qE '^CMD ' "$OUR_DOCKERFILE"; then
-    fail "Dockerfile overrides CMD — exe.dev requires the base image's systemd init"
-  else
-    ok "No CMD override (inherits base image init)"
+if [[ -n "$FORK" ]]; then
+  ok "Fork Dockerfile fetched from ${FORK_REPO}"
+
+  # Check fork base matches upstream base
+  FORK_BASE=$(echo "$FORK" | grep -E '^FROM ubuntu:' | head -1 | awk '{print $2}')
+  UPSTREAM_UBUNTU=$(echo "$UPSTREAM" | grep -E '^FROM ubuntu:' | tail -1 | awk '{print $2}')
+  if [[ -n "$UPSTREAM_UBUNTU" ]] && [[ "$FORK_BASE" == "$UPSTREAM_UBUNTU" ]]; then
+    ok "Fork base matches upstream ($FORK_BASE)"
+  elif [[ -n "$UPSTREAM_UBUNTU" ]]; then
+    warn "Fork base ($FORK_BASE) differs from upstream ($UPSTREAM_UBUNTU) — sync needed"
   fi
 
-  # Verify it doesn't override ENTRYPOINT
-  if grep -qE '^ENTRYPOINT ' "$OUR_DOCKERFILE"; then
-    fail "Dockerfile overrides ENTRYPOINT — exe.dev requires the base image's init"
-  else
-    ok "No ENTRYPOINT override"
-  fi
-
-  # Verify runner path matches what setup-exe-runner expects
-  if grep -q '/home/exedev/actions-runner' "$OUR_DOCKERFILE"; then
+  # Verify runner installation is present
+  if echo "$FORK" | grep -q '/home/exedev/actions-runner'; then
     ok "Runner path matches setup action (~/actions-runner)"
   else
-    fail "Runner install path doesn't match setup-exe-runner expectation"
+    fail "Runner install path not found in fork Dockerfile"
   fi
 
   # Verify ownership is set to exedev
-  if grep -q 'chown.*exedev:exedev.*actions-runner' "$OUR_DOCKERFILE"; then
+  if echo "$FORK" | grep -q 'chown.*exedev:exedev.*actions-runner'; then
     ok "Runner directory owned by exedev"
   else
     warn "Runner directory ownership may not be set correctly"
   fi
-else
-  fail "runner-image/Dockerfile not found"
+
+  # Verify RUNNER_VERSION build arg exists
+  if echo "$FORK" | grep -q 'ARG RUNNER_VERSION'; then
+    ok "RUNNER_VERSION build arg present"
+  else
+    fail "RUNNER_VERSION build arg missing from fork Dockerfile"
+  fi
 fi
 
 echo ""
