@@ -1,0 +1,31 @@
+name: Reap Orphaned VMs
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: 'Log what would be reaped without destroying anything'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  reap:
+    name: Reap orphaned exeunt-* VMs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reap orphaned VMs
+        env:
+          EXE_SSH_KEY: ${{ secrets.EXE_SSH_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GH_RUNNER_TOKEN }}
+        run: |
+          set -euo pipefail
+          ARGS=("--repo" "${{ github.repository }}")
+          if [[ "${{ inputs.dry-run }}" == "true" ]]; then
+            ARGS+=("--dry-run")
+          fi
+          bash scripts/reaper.sh "${ARGS[@]}"
