@@ -29,7 +29,11 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - name: Clone exeuntu fork
+        uses: actions/checkout@v4
+        with:
+          repository: metcalfc/exeuntu
+          path: exeuntu
 
       - name: Get latest runner version
         id: runner-version
@@ -70,7 +74,7 @@ jobs:
         if: steps.check-tag.outputs.exists == 'false' || inputs.force
         uses: docker/build-push-action@v6
         with:
-          context: runner-image
+          context: exeuntu
           push: true
           build-args: |
             RUNNER_VERSION=${{ steps.runner-version.outputs.version }}
