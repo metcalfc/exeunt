@@ -175,6 +175,62 @@ func TestGenerateJITConfigEmpty(t *testing.T) {
 	}
 }
 
+func TestGenerateJITConfigConnectionError(t *testing.T) {
+	// Start a server and immediately close it to get a connection refused error
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+	serverURL := server.URL
+	server.Close()
+
+	client := &GitHubClient{
+		Token:      "test-token",
+		HTTPClient: &http.Client{Transport: &urlRewriteTransport{base: http.DefaultTransport, baseURL: serverURL}},
+	}
+
+	_, err := client.GenerateJITConfig(context.Background(), "org/repo", "vm", []string{"exe"})
+	if err == nil {
+		t.Fatal("expected error for connection refused")
+	}
+}
+
+func TestGenerateJITConfigInvalidJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, `not valid json at all{{{`)
+	}))
+	defer server.Close()
+
+	client := &GitHubClient{
+		Token:      "test-token",
+		HTTPClient: &http.Client{Transport: &urlRewriteTransport{base: server.Client().Transport, baseURL: server.URL}},
+	}
+
+	_, err := client.GenerateJITConfig(context.Background(), "org/repo", "vm", []string{"exe"})
+	if err == nil {
+		t.Fatal("expected error for invalid JSON response")
+	}
+}
+
+func TestGenerateJITConfigCancelledContext(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, `{"encoded_jit_config":"cfg","runner":{"id":1}}`)
+	}))
+	defer server.Close()
+
+	client := &GitHubClient{
+		Token:      "test-token",
+		HTTPClient: &http.Client{Transport: &urlRewriteTransport{base: server.Client().Transport, baseURL: server.URL}},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	_, err := client.GenerateJITConfig(ctx, "org/repo", "vm", []string{"exe"})
+	if err == nil {
+		t.Fatal("expected error for cancelled context")
+	}
+}
+
 // urlRewriteTransport rewrites request URLs to point to a test server.
 type urlRewriteTransport struct {
 	base    http.RoundTripper

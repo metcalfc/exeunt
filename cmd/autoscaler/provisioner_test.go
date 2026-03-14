@@ -64,6 +64,34 @@ func TestProvisionDedup(t *testing.T) {
 	}
 }
 
+func TestProvisionContextCancelled(t *testing.T) {
+	// Single backend with capacity 1
+	backend := &MockBackend{name: "test", labels: []string{"exe"}, priority: 1, maxRunners: 1}
+	p, tracker := newProvisionerWithMocks(t, backend)
+
+	// Fill the semaphore to capacity
+	p.semaphore <- struct{}{}
+
+	// Cancel the context before calling Provision
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	event := WorkflowJobEvent{Action: "queued"}
+	event.WorkflowJob.ID = 700
+	event.WorkflowJob.Labels = []string{"exe"}
+	event.Repository.FullName = "metcalfc/exeunt"
+
+	// Provision should return immediately due to cancelled context
+	p.Provision(ctx, event)
+
+	if tracker.HasJob(700) {
+		t.Error("expected job 700 not to be tracked (context cancelled)")
+	}
+
+	// Drain the semaphore token we put in
+	<-p.semaphore
+}
+
 func TestProvisionNoBackend(t *testing.T) {
 	// No backends match the labels
 	backend := &MockBackend{name: "test", labels: []string{"gpu"}, priority: 1, maxRunners: 5}
