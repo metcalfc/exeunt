@@ -1,0 +1,29 @@
+name: Test Autoscaler
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Run on autoscaler-provisioned VM
+    runs-on: [self-hosted, exe]
+    steps:
+      - name: System info
+        run: |
+          echo "=== Autoscaler-provisioned VM ==="
+          echo "Hostname: $(hostname)"
+          echo "OS: $(uname -a)"
+          echo "User: $(whoami)"
+
+      - name: Toolchain smoke test
+        run: |
+          echo "=== Mise toolchains ==="
+          mise doctor
+          go version
+          python --version
+          ruby --version
+          rustc --version
+          node --version
+
+      - name: Done
+        run: echo "Autoscaler test passed!"
