@@ -95,6 +95,7 @@ jobs:
 |-------|-----------|----------|
 | `exe` | Best available (bare metal first, then exe.dev) | Default for all jobs |
 | `exe-large` | Bare metal only | CPU/memory-intensive builds |
+| `exe-gpu` | Bare metal with GPU | GPU workloads |
 | `exe-builder` | Persistent builder VM | Image builds (Docker cache persists) |
 
 ## Setup
@@ -146,7 +147,13 @@ Generate the webhook secret: `openssl rand -hex 32`
 
 ### 3. Config
 
-Edit `deploy/config.json` with your backends:
+Copy the example config and add your backends:
+
+```bash
+cp deploy/config.json deploy/config.local.json
+```
+
+`deploy/config.local.json` is gitignored — it contains your host-specific backend definitions. The repo ships `deploy/config.json` as a template with an empty backends list. `make deploy` automatically prefers `config.local.json` if it exists.
 
 ```json
 {
@@ -160,7 +167,7 @@ Edit `deploy/config.json` with your backends:
       "host": "bigserver",
       "user": "youruser",
       "max_runners": 5,
-      "labels": ["exe", "exe-large"],
+      "labels": ["exe", "exe-large", "exe-gpu"],
       "priority": 1
     },
     {
@@ -173,6 +180,8 @@ Edit `deploy/config.json` with your backends:
   ]
 }
 ```
+
+Lower priority number = preferred. Jobs try backends in priority order and fall back automatically on failure.
 
 ### 4. Deploy
 
@@ -264,10 +273,11 @@ make restart
 
 ### Adding a backend
 
-1. Add the host to your Tailscale tailnet with `tag:exework`
-2. Ensure Docker is installed on the host
-3. Add an entry to `deploy/config.json`
-4. `make deploy`
+1. Install Docker and Tailscale on the host
+2. `tailscale up --ssh`, tag as `tag:exework` in Tailscale admin
+3. Install the hourly image pull cron: `scripts/pull-runner-image.sh`
+4. Add an entry to `deploy/config.local.json`
+5. `make deploy`
 
 ### Runner image
 

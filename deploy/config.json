@@ -4,22 +4,5 @@
   "runner_image": "ghcr.io/metcalfc/exeunt-runner:latest",
   "state_file": "/var/lib/exeunt-autoscaler/state.json",
   "log_level": "info",
-  "backends": [
-    {
-      "name": "boxloader",
-      "type": "docker",
-      "host": "boxloader",
-      "user": "metcalfc",
-      "max_runners": 5,
-      "labels": ["exe", "exe-large", "exe-gpu"],
-      "priority": 1
-    },
-    {
-      "name": "exe.dev",
-      "type": "exedev",
-      "max_runners": 5,
-      "labels": ["exe"],
-      "priority": 10
-    }
-  ]
+  "backends": []
 }

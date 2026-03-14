@@ -3,6 +3,7 @@ BINARY = exeunt-autoscaler
 BUILD_DIR = cmd/autoscaler
 REMOTE_BIN = /usr/local/bin/$(BINARY)
 SERVICE = exeunt-autoscaler
+CONFIG = $(shell test -f deploy/config.local.json && echo deploy/config.local.json || echo deploy/config.json)
 
 .PHONY: build test deploy start stop restart status logs clean
 
@@ -15,7 +16,7 @@ test:
 deploy: build
 	scp $(BINARY) $(HOST):/tmp/$(BINARY)
 	scp deploy/exeunt-autoscaler.service $(HOST):/tmp/$(SERVICE).service
-	scp deploy/config.json $(HOST):/tmp/autoscaler-config.json
+	scp $(CONFIG) $(HOST):/tmp/autoscaler-config.json
 	ssh $(HOST) 'sudo systemctl stop $(SERVICE) 2>/dev/null || true'
 	ssh $(HOST) 'sudo mv /tmp/$(BINARY) $(REMOTE_BIN) && sudo chmod +x $(REMOTE_BIN)'
 	ssh $(HOST) 'sudo mv /tmp/$(SERVICE).service /etc/systemd/system/$(SERVICE).service'
