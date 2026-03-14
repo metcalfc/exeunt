@@ -11,33 +11,6 @@
       "host": "boxloader",
       "user": "metcalfc",
       "max_runners": 5,
-      "labels": ["exe", "exe-large"],
-      "priority": 1
-    },
-    {
-      "name": "blackbox",
-      "type": "docker",
-      "host": "blackbox",
-      "user": "metcalfc",
-      "max_runners": 5,
-      "labels": ["exe", "exe-large"],
-      "priority": 1
-    },
-    {
-      "name": "lemur",
-      "type": "docker",
-      "host": "lemur",
-      "user": "metcalfc",
-      "max_runners": 3,
-      "labels": ["exe"],
-      "priority": 2
-    },
-    {
-      "name": "dgx-spark",
-      "type": "docker",
-      "host": "dgx-spark",
-      "user": "metcalfc",
-      "max_runners": 3,
       "labels": ["exe", "exe-large", "exe-gpu"],
       "priority": 1
     },
