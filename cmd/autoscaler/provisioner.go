@@ -92,13 +92,22 @@ func (p *Provisioner) provision(ctx context.Context, log *slog.Logger, jobID int
 	}
 
 	log.Info("generating JIT config")
-	jitConfig, err := p.github.GenerateJITConfig(ctx, repo, vmName, labels)
+	jitConfig, runnerID, err := p.github.GenerateJITConfig(ctx, repo, vmName, labels)
 	if err != nil {
 		return fmt.Errorf("generate JIT config: %w", err)
 	}
 
-	log.Info("starting runner")
+	log.Info("starting runner", "runner_id", runnerID)
 	if err := backend.StartRunner(ctx, vmName, jitConfig); err != nil {
+		// StartRunner failed but we already registered the runner in GitHub.
+		// Remove the registration to prevent 409 "Already exists" errors
+		// and stale offline runners that cause job stealing.
+		if rmErr := p.github.RemoveRunner(ctx, repo, runnerID); rmErr != nil {
+			log.Warn("failed to remove GitHub runner registration after start failure",
+				"runner_id", runnerID, "error", rmErr)
+		} else {
+			log.Info("removed GitHub runner registration after start failure", "runner_id", runnerID)
+		}
 		return fmt.Errorf("start runner: %w", err)
 	}
 

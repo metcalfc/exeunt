@@ -139,7 +139,8 @@ func reconcile(ctx context.Context, tracker *Tracker, backends []Backend, logger
 	// Build set of existing runners across all backends.
 	// Track which backends failed so we don't garbage-collect their VMs
 	// when we simply couldn't reach the backend.
-	existing := make(map[string]bool)
+	existing := make(map[string]bool)          // vm name → exists in backend
+	backendByVM := make(map[string]Backend)    // vm name → backend that owns it
 	failedBackends := make(map[string]bool)
 	for _, b := range backends {
 		runners, err := b.ListRunners(ctx)
@@ -150,11 +151,20 @@ func reconcile(ctx context.Context, tracker *Tracker, backends []Backend, logger
 		}
 		for _, name := range runners {
 			existing[name] = true
+			backendByVM[name] = b
 		}
 	}
 
-	// Remove tracker entries for runners that no longer exist,
+	// Build set of tracked VM names for reverse lookup.
+	tracked := make(map[string]bool)
+	for _, record := range tracker.ActiveVMs() {
+		tracked[record.VMName] = true
+	}
+
+	// Forward: remove tracker entries for runners that no longer exist,
 	// but skip VMs on backends we couldn't reach.
+	const staleTimeout = 10 * time.Minute
+	now := time.Now().UTC()
 	for _, record := range tracker.ActiveVMs() {
 		if failedBackends[record.Backend] {
 			logger.Debug("reconcile: skipping VM on unreachable backend",
@@ -165,6 +175,41 @@ func reconcile(ctx context.Context, tracker *Tracker, backends []Backend, logger
 			logger.Warn("reconcile: runner no longer exists, removing from tracker",
 				"vm", record.VMName, "job_id", record.JobID, "backend", record.Backend)
 			tracker.Remove(record.JobID)
+			continue
+		}
+
+		// Stale check: if a runner has been in "ready" status for too long,
+		// the runner process likely exited (completed a different job or crashed)
+		// while the container is still alive. Destroy it.
+		if record.Status == StatusReady {
+			created, err := time.Parse(time.RFC3339, record.CreatedAt)
+			if err == nil && now.Sub(created) > staleTimeout {
+				logger.Warn("reconcile: runner stuck in ready, destroying",
+					"vm", record.VMName, "job_id", record.JobID,
+					"age", now.Sub(created).Round(time.Second))
+				b := backendByVM[record.VMName]
+				if b != nil {
+					if err := b.DestroyRunner(ctx, record.VMName); err != nil {
+						logger.Error("reconcile: failed to destroy stale runner",
+							"vm", record.VMName, "error", err)
+					}
+				}
+				tracker.Remove(record.JobID)
+			}
+		}
+	}
+
+	// Reverse: destroy orphaned VMs that exist in the backend but aren't tracked.
+	// These leak from failed provisioning, tracker state loss, or autoscaler restarts.
+	for vmName, b := range backendByVM {
+		if tracked[vmName] {
+			continue
+		}
+		logger.Warn("reconcile: destroying orphaned runner",
+			"vm", vmName, "backend", b.Name())
+		if err := b.DestroyRunner(ctx, vmName); err != nil {
+			logger.Error("reconcile: failed to destroy orphan",
+				"vm", vmName, "error", err)
 		}
 	}
 }
