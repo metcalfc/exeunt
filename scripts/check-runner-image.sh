@@ -26,9 +26,31 @@ warn()  { echo "  ! $*"; WARNINGS=$((WARNINGS + 1)); }
 fail()  { echo "  ✗ $*"; ERRORS=$((ERRORS + 1)); }
 debug() { $VERBOSE && echo "  … $*" || true; }
 
+# Retry a command up to N times with backoff. Usage: retry <attempts> <cmd...>
+retry() {
+  local attempts=$1; shift
+  local delay=2
+  for i in $(seq 1 "$attempts"); do
+    if "$@"; then
+      return 0
+    fi
+    if [[ $i -lt $attempts ]]; then
+      debug "Attempt $i/$attempts failed, retrying in ${delay}s..."
+      sleep "$delay"
+      delay=$((delay * 2))
+    fi
+  done
+  return 1
+}
+
+# Fetch a URL with retries. Output goes to stdout.
+fetch() {
+  retry 3 curl -fsSL --connect-timeout 10 --max-time 30 "$1"
+}
+
 echo "=== Upstream exeuntu compatibility ==="
 
-UPSTREAM=$(curl -fsSL "$UPSTREAM_RAW" 2>/dev/null) || {
+UPSTREAM=$(fetch "$UPSTREAM_RAW" 2>/dev/null) || {
   warn "Could not fetch upstream Dockerfile from ${UPSTREAM_RAW}"
   UPSTREAM=""
 }
@@ -49,7 +71,6 @@ if [[ -n "$UPSTREAM" ]]; then
   fi
 
   # Check curl is installed (we need it for runner download in Dockerfile)
-  # The install list spans many lines, so just check if curl appears anywhere
   if echo "$UPSTREAM" | grep -qw 'curl'; then
     ok "Upstream installs curl"
   else
@@ -83,24 +104,23 @@ fi
 echo ""
 echo "=== Runner version status ==="
 
-LATEST_RUNNER=$(curl -fsSL "https://api.github.com/repos/actions/runner/releases/latest" 2>/dev/null \
+LATEST_RUNNER=$(fetch "https://api.github.com/repos/actions/runner/releases/latest" 2>/dev/null \
   | jq -r '.tag_name' | sed 's/^v//') || {
-  fail "Could not fetch latest runner version from GitHub"
+  warn "Could not fetch latest runner version from GitHub"
   LATEST_RUNNER=""
 }
 
 if [[ -n "$LATEST_RUNNER" ]]; then
   info "Latest runner version: v${LATEST_RUNNER}"
 
-  # Check what we've published to GHCR
-  if docker manifest inspect "${IMAGE}:v${LATEST_RUNNER}" > /dev/null 2>&1; then
+  # Check what we've published to GHCR (retry manifest inspect too)
+  if retry 3 docker manifest inspect "${IMAGE}:v${LATEST_RUNNER}" > /dev/null 2>&1; then
     ok "GHCR has image tagged v${LATEST_RUNNER}"
   else
     warn "GHCR missing v${LATEST_RUNNER} — run build-runner-image workflow"
   fi
 
-  # Check latest tag
-  if docker manifest inspect "${IMAGE}:latest" > /dev/null 2>&1; then
+  if retry 3 docker manifest inspect "${IMAGE}:latest" > /dev/null 2>&1; then
     ok "GHCR has :latest tag"
   else
     warn "GHCR missing :latest tag"
@@ -110,7 +130,7 @@ fi
 echo ""
 echo "=== Fork Dockerfile check ==="
 
-FORK=$(curl -fsSL "$FORK_RAW" 2>/dev/null) || {
+FORK=$(fetch "$FORK_RAW" 2>/dev/null) || {
   fail "Could not fetch fork Dockerfile from ${FORK_RAW}"
   FORK=""
 }
