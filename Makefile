@@ -1,4 +1,4 @@
-HOST ?= exebuilder.exe.xyz
+HOST ?= exeunt.exe.xyz
 BINARY = exeunt-autoscaler
 BUILD_DIR = cmd/autoscaler
 REMOTE_BIN = /usr/local/bin/$(BINARY)
