@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -57,6 +58,14 @@ func (m *MockSSHExecutor) RunOnVM(_ context.Context, name, script string) (strin
 	return "Runner connected", m.RunOnErr
 }
 
+// failTransport immediately returns an error for all requests.
+// Used in tests to prevent CleanOfflineRunners from hitting the real GitHub API.
+type failTransport struct{}
+
+func (f *failTransport) RoundTrip(_ *http.Request) (*http.Response, error) {
+	return nil, fmt.Errorf("test: no network")
+}
+
 func newTestServer(t *testing.T, mockSSH *MockSSHExecutor) (*Server, *Config) {
 	t.Helper()
 	dir := t.TempDir()
@@ -84,6 +93,9 @@ func newTestServer(t *testing.T, mockSSH *MockSSHExecutor) (*Server, *Config) {
 	backend := NewExeDevBackend(cfg.Backends[0], cfg.RunnerImage, mockSSH, logger)
 	router := NewRouter([]Backend{backend}, tracker, logger)
 	gh := NewGitHubClient(cfg.GitHubToken)
+	// Use a transport that fails instantly so CleanOfflineRunners
+	// doesn't slow down tests with real HTTP calls.
+	gh.HTTPClient = &http.Client{Transport: &failTransport{}}
 	provisioner := NewProvisioner(cfg, tracker, router, gh, logger)
 	server := NewServer(cfg, provisioner, tracker, logger)
 	return server, cfg

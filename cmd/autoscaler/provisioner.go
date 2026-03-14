@@ -45,6 +45,13 @@ func (p *Provisioner) Provision(ctx context.Context, event WorkflowJobEvent) {
 		return
 	}
 
+	// Clean up stale offline runners before provisioning.
+	// Stale registrations cause job stealing: GitHub assigns our new runner
+	// to an old queued job instead of the one we're provisioning for.
+	if cleaned := p.github.CleanOfflineRunners(ctx, repo, log); cleaned > 0 {
+		log.Info("cleaned stale runner registrations", "count", cleaned)
+	}
+
 	// Acquire semaphore
 	select {
 	case p.semaphore <- struct{}{}:

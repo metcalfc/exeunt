@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"strings"
+	"time"
 )
 
 type GitHubClient struct {
@@ -94,6 +97,65 @@ func (c *GitHubClient) GenerateJITConfig(ctx context.Context, repo, vmName strin
 	}
 
 	return jitResp.EncodedJITConfig, jitResp.Runner.ID, nil
+}
+
+// CleanOfflineRunners removes stale offline exeunt-* runner registrations
+// from the repo. These cause job stealing: GitHub assigns a new JIT runner
+// to an old queued job that was waiting for the stale registration.
+func (c *GitHubClient) CleanOfflineRunners(ctx context.Context, repo string, log *slog.Logger) int {
+	if c.HTTPClient == nil {
+		return 0
+	}
+	// Use a short timeout so this doesn't delay provisioning significantly.
+	cleanCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	url := fmt.Sprintf("https://api.github.com/repos/%s/actions/runners", repo)
+	req, err := http.NewRequestWithContext(cleanCtx, "GET", url, nil)
+	if err != nil {
+		return 0
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0
+	}
+
+	var result struct {
+		Runners []struct {
+			ID     int64  `json:"id"`
+			Name   string `json:"name"`
+			Status string `json:"status"`
+		} `json:"runners"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return 0
+	}
+
+	cleaned := 0
+	for _, r := range result.Runners {
+		if r.Status == "offline" && strings.HasPrefix(r.Name, "exeunt-") {
+			if err := c.RemoveRunner(ctx, repo, r.ID); err != nil {
+				log.Warn("failed to clean offline runner", "name", r.Name, "id", r.ID, "error", err)
+			} else {
+				log.Info("cleaned offline runner", "name", r.Name, "id", r.ID)
+				cleaned++
+			}
+		}
+	}
+	return cleaned
 }
 
 // RemoveRunner deletes a runner registration from GitHub. This must be called
