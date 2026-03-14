@@ -81,10 +81,12 @@ $(cat "$result_file" 2>/dev/null || echo 'no output')"
 
   # Email the result back
   reply_subject="Re: $subject"
-  curl -sf -X POST "$GATEWAY" \
+  if ! curl -sf -X POST "$GATEWAY" \
     -H "Content-Type: application/json" \
     -d "$(jq -n --arg to "$ALERT_EMAIL" --arg s "$reply_subject" --arg b "$result" \
-      '{to: $to, subject: $s, body: $b}')" >/dev/null 2>&1 || true
+      '{to: $to, subject: $s, body: $b}')" >/dev/null 2>&1; then
+    echo "ERROR: failed to send reply for: $subject" >&2
+  fi
 
   # Move to processed
   mv "$mail" "$PROCESSED/${filename}:2,S"

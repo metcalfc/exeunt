@@ -28,12 +28,6 @@ func newGitHubClientWithServer(server *httptest.Server) *GitHubClient {
 	}
 }
 
-// generateJITConfigWithURL calls the JIT config endpoint using a custom base URL.
-func generateJITConfigWithURL(ctx context.Context, client *GitHubClient, baseURL, repo, vmName string, labels []string) (string, int64, error) {
-	// We need to replicate GenerateJITConfig but with a different URL.
-	// Since we can't modify the struct, we'll use an HTTP test that intercepts all traffic.
-	return client.GenerateJITConfig(ctx, repo, vmName, labels)
-}
 
 func TestGenerateJITConfig(t *testing.T) {
 	respBody := `{"encoded_jit_config":"base64-jit-config-data","runner":{"id":42}}`

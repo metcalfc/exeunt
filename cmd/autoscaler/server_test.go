@@ -354,7 +354,7 @@ func TestReconcile(t *testing.T) {
 		Labels:     []string{"exe"},
 	}, "test:latest", mockSSH, logger)
 
-	reconcile(context.Background(), tracker, []Backend{backend}, logger)
+	reconcile(context.Background(), tracker, []Backend{backend}, make(chan struct{}, 10), logger)
 
 	if tracker.Count() != 1 {
 		t.Fatalf("count after reconcile = %d, want 1", tracker.Count())

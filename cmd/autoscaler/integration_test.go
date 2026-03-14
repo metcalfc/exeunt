@@ -371,7 +371,7 @@ func TestIntegrationFullProvisionerFlow(t *testing.T) {
 	}
 
 	// Reconcile should keep the VM (it exists)
-	reconcile(ctx, tracker, []Backend{backend}, logger)
+	reconcile(ctx, tracker, []Backend{backend}, make(chan struct{}, 10), logger)
 	if !tracker.HasJob(1) {
 		t.Error("reconcile removed job 1 but VM still exists")
 	}
