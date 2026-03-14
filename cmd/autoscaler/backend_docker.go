@@ -72,10 +72,10 @@ func (b *DockerBackend) CreateRunner(ctx context.Context, name, image string) er
 	if image == "" {
 		image = b.image
 	}
-	// Pull latest image, then run container with the runner entrypoint waiting for JIT config.
+	// Pull latest image, then run container as exedev (non-root).
 	// The container starts with a sleep; StartRunner will exec the actual runner.
 	cmd := fmt.Sprintf(
-		"docker pull %s && docker run -d --name %s --hostname %s %s sleep infinity",
+		"docker pull %s && docker run -d --user exedev --name %s --hostname %s --workdir /home/exedev %s sleep infinity",
 		image, name, name, image,
 	)
 	b.logger.Info("creating docker runner", "host", b.host, "name", name)
@@ -86,10 +86,9 @@ func (b *DockerBackend) CreateRunner(ctx context.Context, name, image string) er
 }
 
 func (b *DockerBackend) StartRunner(ctx context.Context, name, jitConfig string) error {
-	// Exec the runner inside the already-running container.
-	// Use docker exec to start the runner as exedev with JIT config.
+	// Exec the runner inside the already-running container (already running as exedev).
 	script := fmt.Sprintf(
-		`docker exec -d %s bash -c 'cd /home/exedev/actions-runner && sudo -u exedev ./run.sh --jitconfig "%s" > /home/exedev/actions-runner/runner.log 2>&1'`,
+		`docker exec -d %s bash -c 'cd /home/exedev/actions-runner && ./run.sh --jitconfig "%s" > /home/exedev/actions-runner/runner.log 2>&1'`,
 		name, jitConfig,
 	)
 	b.logger.Info("starting runner in container", "host", b.host, "name", name)
