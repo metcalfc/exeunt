@@ -6,19 +6,26 @@
 
 *"Exeunt all."* — stage direction for when everyone leaves.
 
-Ephemeral [exe.dev](https://exe.dev) runners for GitHub Actions. VMs spin up, do the work, and exit. Hence the name.
+Ephemeral self-hosted GitHub Actions runners. VMs spin up, do the work, and exit. Hence the name.
+
+Runs on your own hardware (bare metal, home lab) with [exe.dev](https://exe.dev) cloud VMs as automatic fallback. Connected via [Tailscale](https://tailscale.com). Authenticated via GitHub OIDC — zero stored secrets.
 
 (Not to be confused with [exeuntu](https://github.com/boldsoftware/exeuntu), the exe.dev base image. Yes, we noticed.)
 
 ## Architecture
+
+Pick names for your machines. We like pufferfish — `porcupine`, `hedgehog`, `balloonfish` — but anything works. You'll need:
+
+- **An exe.dev VM** for the autoscaler (we'll call ours `porcupine`)
+- **One or more bare metal servers** with Docker (we'll call ours `hedgehog`)
 
 ```
 GitHub webhook (workflow_job)
         │
         ▼
 ┌─────────────────┐
-│   Autoscaler    │  (runs on exebuilder VM)
-│   :8080/webhook │
+│   Autoscaler    │  porcupine.exe.xyz
+│   :8080/webhook │  (persistent exe.dev VM)
 └────────┬────────┘
          │ routes by label + priority
          ├──────────────────────────┐
@@ -29,15 +36,14 @@ GitHub webhook (workflow_job)
 │  priority: 1    │      │  priority: 10    │
 │  tailscale ssh  │      │  ssh exe.dev     │
 └─────────────────┘      └──────────────────┘
-   boxloader                exe.dev VMs
-   16c/96GB                 shared 2c/8GB
+   hedgehog                exe.dev VMs
+   your hardware           shared cloud
+   FREE                    ~$20/mo
 ```
 
-The autoscaler receives GitHub `workflow_job` webhooks, provisions runners on the best available backend, and destroys them when jobs complete. Bare metal gets priority (faster, more resources), exe.dev is the fallback.
+Jobs land on your hardware first (free, fast, more resources). If it's full or unreachable, they fall back to exe.dev automatically.
 
 ## Quick start
-
-### Option 1: Autoscaler (recommended)
 
 With the autoscaler running, any workflow just uses `runs-on`:
 
@@ -47,47 +53,10 @@ jobs:
     runs-on: [self-hosted, exe]
     steps:
       - uses: actions/checkout@v5
-      - run: echo "Running on a real VM or bare metal"
+      - run: echo "Running on bare metal or cloud VM"
 ```
 
-No provision/teardown jobs needed. The autoscaler handles the full lifecycle.
-
-### Option 2: Composite actions (manual)
-
-For repos without the autoscaler webhook, use the composite actions directly:
-
-```yaml
-jobs:
-  provision:
-    runs-on: ubuntu-latest
-    outputs:
-      vm_name: ${{ steps.setup.outputs.vm_name }}
-    steps:
-      - uses: actions/checkout@v5
-      - uses: metcalfc/exeunt/setup-exe-runner@main
-        id: setup
-        with:
-          exe-ssh-key: ${{ secrets.EXE_SSH_KEY }}
-          github-token: ${{ secrets.GH_RUNNER_TOKEN }}
-
-  work:
-    needs: provision
-    runs-on: [self-hosted, exe]
-    steps:
-      - uses: actions/checkout@v5
-      - run: echo "Running on a real VM"
-
-  teardown:
-    runs-on: ubuntu-latest
-    needs: [provision, work]
-    if: always()
-    steps:
-      - uses: actions/checkout@v5
-      - uses: metcalfc/exeunt/teardown-exe-runner@main
-        with:
-          exe-ssh-key: ${{ secrets.EXE_SSH_KEY }}
-          vm-name: ${{ needs.provision.outputs.vm_name }}
-```
+No provision/teardown jobs. The autoscaler handles the full lifecycle via webhooks.
 
 ## Labels
 
@@ -100,60 +69,108 @@ jobs:
 
 ## Setup
 
-### Prerequisites
+### What you need
 
-- [exe.dev](https://exe.dev) account with SSH key
-- [Tailscale](https://tailscale.com) tailnet (for bare metal backends)
-- GitHub PAT with `repo` scope (for JIT runner config)
+- A server with Docker (the bigger the better — `hedgehog` in our examples)
+- An [exe.dev](https://exe.dev) account with SSH key
+- A [Tailscale](https://tailscale.com) tailnet
+- A GitHub repo
 
-### 1. Autoscaler VM
+### 1. Prepare your server (`hedgehog`)
 
-The autoscaler runs on a persistent exe.dev VM called `exebuilder`.
+Your bare metal server needs Docker and Tailscale.
+
+```bash
+# Install Docker (if not already)
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $USER
+
+# Install Tailscale and join your tailnet
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up --ssh
+```
+
+Tag `hedgehog` as `tag:exework` in the [Tailscale admin](https://login.tailscale.com/admin/machines).
+
+Pull the runner image:
+
+```bash
+docker pull ghcr.io/metcalfc/exeunt-runner:latest
+```
+
+Set up hourly image pulls so new builds are ready instantly:
+
+```bash
+cp scripts/pull-runner-image.sh ~/bin/
+chmod +x ~/bin/pull-runner-image.sh
+(crontab -l 2>/dev/null; echo '0 * * * * ~/bin/pull-runner-image.sh >> ~/.local/log/pull-runner-image.log 2>&1') | crontab -
+```
+
+### 2. Create the autoscaler VM (`porcupine`)
+
+The autoscaler runs on a persistent exe.dev VM.
 
 ```bash
 # Create the VM
-ssh exe.dev new --name=exebuilder --image=ghcr.io/metcalfc/exeunt-runner:latest --no-email
+ssh exe.dev new --name=porcupine --image=ghcr.io/metcalfc/exeunt-runner:latest --no-email
 
-# Install Tailscale and join your tailnet
-ssh exebuilder.exe.xyz bash -c '
-  curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/noble.noarmor.gpg \
-    | sudo tee /usr/share/keyrings/tailscale-archive-keyring.gpg > /dev/null
-  curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/noble.tailscale-keyring.list \
-    | sudo tee /etc/apt/sources.list.d/tailscale.list > /dev/null
-  sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tailscale
-  sudo systemctl enable --now tailscaled
-  sudo tailscale up --authkey=YOUR_TAILSCALE_AUTH_KEY --hostname=exebuilder --ssh
-'
-
-# Register a persistent GitHub Actions runner (for image builds)
-ssh exebuilder.exe.xyz 'sudo -u exedev bash -c "
-  cd /home/exedev/actions-runner
-  ./config.sh --url https://github.com/YOUR/REPO --token YOUR_RUNNER_TOKEN \
-    --name exebuilder --labels self-hosted,exe-builder --unattended --replace
-  nohup ./run.sh > runner.log 2>&1 &
-"'
+# Join the tailnet (Tailscale is pre-installed in the image)
+ssh porcupine.exe.xyz 'sudo systemctl enable --now tailscaled && sudo tailscale up --authkey=YOUR_AUTH_KEY --hostname=porcupine --ssh'
 ```
 
-### 2. Secrets
+Tag `porcupine` as `tag:exedev` (this happens automatically if your auth key is tagged).
 
-Create `/etc/exeunt-autoscaler/env` on exebuilder:
+### 3. Set up Tailscale OIDC (zero secrets)
+
+Tailscale supports [GitHub Actions OIDC](https://tailscale.com/docs/features/workload-identity-federation) — no stored secrets needed for runner auth.
+
+1. Go to [Tailscale admin > Trust credentials](https://login.tailscale.com/admin/settings/trust-credentials)
+2. Create an **OpenID Connect** credential
+3. Issuer: **GitHub Actions**
+4. Subject: `repo:your-org/*:*` (covers all repos in your org)
+5. Scopes: **Auth Keys** (write) + **Devices Core** (write)
+6. Save — you get a **Client ID** and **Audience** (neither is a secret)
+
+### 4. Tailscale ACLs
+
+Add these to your [Tailscale ACL policy](https://login.tailscale.com/admin/acls) so the autoscaler VM can reach your servers:
+
+```json
+"tagOwners": {
+  "tag:exedev":  ["autogroup:admin"],
+  "tag:exework": ["autogroup:admin"]
+},
+"ACLs": [
+  {"Action": "accept", "Users": ["tag:exedev"], "Ports": ["tag:exework:*"]}
+],
+"ssh": [
+  {"action": "accept", "src": ["tag:exedev"], "dst": ["tag:exework"], "users": ["autogroup:nonroot", "root"]},
+  {"action": "check",  "src": ["autogroup:member"], "dst": ["tag:exework"], "users": ["autogroup:nonroot", "root"]}
+]
+```
+
+- `tag:exedev` → autoscaler VM (`porcupine`)
+- `tag:exework` → bare metal servers (`hedgehog`, etc.)
+- The second SSH rule lets you personally SSH to your servers too
+
+### 5. Autoscaler secrets
+
+Create `/etc/exeunt-autoscaler/env` on `porcupine`:
 
 ```bash
-AUTOSCALER_WEBHOOK_SECRET=<random-hex-string>
-AUTOSCALER_GITHUB_TOKEN=<github-pat-with-repo-scope>
+AUTOSCALER_WEBHOOK_SECRET=<generate with: openssl rand -hex 32>
+AUTOSCALER_GITHUB_TOKEN=<github PAT with repo scope>
 ```
 
-Generate the webhook secret: `openssl rand -hex 32`
+These are the only two secrets in the system. Everything else uses OIDC.
 
-### 3. Config
-
-Copy the example config and add your backends:
+### 6. Config
 
 ```bash
 cp deploy/config.json deploy/config.local.json
 ```
 
-`deploy/config.local.json` is gitignored — it contains your host-specific backend definitions. The repo ships `deploy/config.json` as a template with an empty backends list. `make deploy` automatically prefers `config.local.json` if it exists.
+Edit `deploy/config.local.json` with your hosts (this file is gitignored):
 
 ```json
 {
@@ -162,9 +179,9 @@ cp deploy/config.json deploy/config.local.json
   "runner_image": "ghcr.io/metcalfc/exeunt-runner:latest",
   "backends": [
     {
-      "name": "bigserver",
+      "name": "hedgehog",
       "type": "docker",
-      "host": "bigserver",
+      "host": "hedgehog",
       "user": "youruser",
       "max_runners": 5,
       "labels": ["exe", "exe-large", "exe-gpu"],
@@ -181,45 +198,44 @@ cp deploy/config.json deploy/config.local.json
 }
 ```
 
-Lower priority number = preferred. Jobs try backends in priority order and fall back automatically on failure.
+Lower priority = preferred. If `hedgehog` fails or is full, jobs fall back to exe.dev.
 
-### 4. Deploy
+### 7. Deploy
 
 ```bash
-make deploy                          # deploy to exebuilder (default)
-HOST=other.host make deploy          # deploy to a different host
+make deploy                           # deploys to porcupine (default HOST)
 ```
 
-### 5. GitHub webhook
+### 8. GitHub webhook
 
-Add a webhook at `https://github.com/YOUR/REPO/settings/hooks`:
+Add a webhook in your repo settings (`Settings > Webhooks`):
 
-- **URL:** `https://exebuilder.exe.xyz/webhook`
+- **URL:** `https://porcupine.exe.xyz/webhook`
 - **Content type:** `application/json`
-- **Secret:** same value as `AUTOSCALER_WEBHOOK_SECRET`
-- **Events:** select "Workflow jobs" only
+- **Secret:** same as `AUTOSCALER_WEBHOOK_SECRET`
+- **Events:** select **Workflow jobs** only
 
-Make the exe.dev proxy public: `ssh exe.dev share set-public exebuilder && ssh exe.dev share port exebuilder 8080`
+Make the endpoint public:
 
-### 6. Tailscale ACLs
-
-Tag your machines and add ACL rules so the autoscaler can reach Docker hosts:
-
-```json
-"tagOwners": {
-  "tag:exedev":  ["autogroup:admin"],
-  "tag:exework": ["autogroup:admin"]
-},
-"ACLs": [
-  {"Action": "accept", "Users": ["tag:exedev"], "Ports": ["tag:exework:*"]}
-],
-"ssh": [
-  {"action": "accept", "src": ["tag:exedev"], "dst": ["tag:exework"], "users": ["autogroup:nonroot", "root"]}
-]
+```bash
+ssh exe.dev share set-public porcupine
+ssh exe.dev share port porcupine 8080
 ```
 
-- Tag exebuilder as `tag:exedev` (via Tailscale auth key)
-- Tag bare metal Docker hosts as `tag:exework` (in Tailscale admin)
+### 9. Register the persistent builder (optional)
+
+If you want a persistent runner for image builds (Docker cache persists between builds):
+
+```bash
+ssh porcupine.exe.xyz 'sudo -u exedev bash -c "
+  cd ~/actions-runner
+  ./config.sh --url https://github.com/YOUR/REPO --token YOUR_RUNNER_TOKEN \
+    --name porcupine --labels self-hosted,exe-builder --unattended --replace
+  nohup ./run.sh > runner.log 2>&1 &
+"'
+```
+
+Name it outside the `exeunt-*` pattern so the reaper won't touch it.
 
 ## Operations
 
@@ -228,70 +244,56 @@ Tag your machines and add ACL rules so the autoscaler can reach Docker hosts:
 ```bash
 make deploy                  # build, push binary + config + systemd unit, restart
 make restart                 # rebuild and hot-swap the binary
-make start                   # start the service
-make stop                    # stop the service
+make start / stop            # start or stop the service
 make status                  # systemd status
-make logs                    # last 50 log lines
+make logs                    # last 50 journal lines
 make test                    # run unit tests
-HOST=other.host make status  # target a different host
+HOST=porcupine.exe.xyz make status  # explicit host
 ```
 
 ### Monitoring
 
-The autoscaler exposes two HTTP endpoints:
-
 ```bash
 # Health check
-curl https://exebuilder.exe.xyz/healthz
+curl https://porcupine.exe.xyz/healthz
 # {"status":"ok","uptime":"2h15m","active_vms":1,"backends":2}
 
 # Detailed status
-curl https://exebuilder.exe.xyz/status
+curl https://porcupine.exe.xyz/status
 # {"active_vms":[...],"count":1,"backends":2,"uptime":"2h15m"}
-```
 
-Logs are structured JSON to stdout, captured by systemd journal:
-
-```bash
-# Follow logs live
-ssh exebuilder.exe.xyz sudo journalctl -u exeunt-autoscaler -f
-
-# Filter by log level
-ssh exebuilder.exe.xyz sudo journalctl -u exeunt-autoscaler --no-pager | grep ERROR
+# Follow logs
+make logs
 ```
 
 ### Upgrading
 
 ```bash
-# Pull latest code, rebuild, and deploy
-git pull
-make deploy
-
-# Or just hot-swap the binary without updating config/systemd
-make restart
+git pull && make deploy       # full deploy with config
+git pull && make restart      # binary only, keep config
 ```
 
-### Adding a backend
+### Adding a server
 
-1. Install Docker and Tailscale on the host
+1. Install Docker and Tailscale on the new server
 2. `tailscale up --ssh`, tag as `tag:exework` in Tailscale admin
-3. Install the hourly image pull cron: `scripts/pull-runner-image.sh`
+3. Install the hourly image pull cron (`scripts/pull-runner-image.sh`)
 4. Add an entry to `deploy/config.local.json`
 5. `make deploy`
 
 ### Runner image
 
-The runner image is built from a [fork of exeuntu](https://github.com/metcalfc/exeuntu) with:
+Built from a [fork of exeuntu](https://github.com/metcalfc/exeuntu) with:
 
-- GitHub Actions runner binary pre-installed
+- GitHub Actions runner binary
 - [mise](https://mise.jdx.dev) toolchains: Go, Python, Ruby, Rust, Node + CLI tools
 - Tailscale for private networking
 - Claude Code and Codex
 - Docker, git, and standard dev tooling
 
-Toolchains are split into tiered Docker layers for efficient caching:
-- **Tier 1:** Heavy runtimes (Rust, Ruby, Go, Python, Node) — own layers, rarely change
-- **Tier 2:** CLI tools (buf, ruff, golangci-lint, etc.) — single layer, cheap to rebuild
+Toolchains are split into tiered Docker layers:
+- **Tier 1:** Heavy runtimes (Rust, Ruby, Go, Python, Node) — own layers, rarely rebuild
+- **Tier 2:** CLI tools (buf, ruff, golangci-lint, etc.) — single layer, cheap to update
 
 ### Automated maintenance
 
@@ -301,19 +303,15 @@ Toolchains are split into tiered Docker layers for efficient caching:
 | `build-runner-image` | Daily 06:00 UTC | Builds image with latest runner version, pushes to GHCR |
 | `reaper` | Every 15 min | Destroys orphaned `exeunt-*` VMs (safety net) |
 
-The image build runs on the persistent `exebuilder` VM so Docker layer cache persists between builds. Registry cache at GHCR serves as backup.
+### Reaper
 
-### Reaper safety net
+Runs every 15 minutes. Cross-references exe.dev VMs against registered GitHub runners. Any `exeunt-*` VM without an active runner gets destroyed. Catches failed teardowns, cancelled workflows, and autoscaler crashes.
 
-The reaper workflow runs every 15 minutes and cross-references exe.dev VMs against registered GitHub runners. Any `exeunt-*` VM without an active runner gets destroyed. This catches:
+Your persistent autoscaler VM is named outside the `exeunt-*` pattern (e.g., `porcupine`), so the reaper ignores it.
 
-- Failed teardowns
-- Cancelled workflows
-- Autoscaler crashes during provisioning
+## Composite actions (alternative to autoscaler)
 
-The persistent `exebuilder` VM is named outside the `exeunt-*` pattern, so the reaper ignores it.
-
-## Composite actions
+If you don't want the autoscaler, you can use the composite actions directly. This requires three jobs per workflow (provision → work → teardown).
 
 ### `setup-exe-runner`
 

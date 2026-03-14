@@ -3,17 +3,30 @@ name: Test Autoscaler
 on:
   workflow_dispatch:
 
+permissions:
+  id-token: write
+
 jobs:
   test:
     name: Run on autoscaler-provisioned VM
     runs-on: [self-hosted, exe]
     steps:
+      - name: Join tailnet
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: TDJJYqwdU491CNTRL-ktbmRWiZMT11CNTRL
+          audience: api.tailscale.com/TDJJYqwdU491CNTRL-ktbmRWiZMT11CNTRL
+          tags: tag:exedev
+
       - name: System info
         run: |
           echo "=== Autoscaler-provisioned VM ==="
           echo "Hostname: $(hostname)"
           echo "OS: $(uname -a)"
           echo "User: $(whoami)"
+
+      - name: Tailscale status
+        run: tailscale status
 
       - name: Toolchain smoke test
         run: |
