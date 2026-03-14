@@ -1,0 +1,56 @@
+HOST ?= exebuilder.exe.xyz
+BINARY = exeunt-autoscaler
+BUILD_DIR = cmd/autoscaler
+REMOTE_BIN = /usr/local/bin/$(BINARY)
+SERVICE = exeunt-autoscaler
+
+.PHONY: build test deploy start stop restart status logs clean
+
+build:
+	cd $(BUILD_DIR) && GOOS=linux GOARCH=amd64 go build -o ../../$(BINARY) .
+
+test:
+	cd $(BUILD_DIR) && go test -v -count=1 ./...
+
+deploy: build
+	scp $(BINARY) $(HOST):/tmp/$(BINARY)
+	scp deploy/exeunt-autoscaler.service $(HOST):/tmp/$(SERVICE).service
+	scp deploy/config.json $(HOST):/tmp/autoscaler-config.json
+	ssh $(HOST) bash -s << 'REMOTE'
+	set -euo pipefail
+	sudo systemctl stop $(SERVICE) 2>/dev/null || true
+	sudo mv /tmp/$(BINARY) $(REMOTE_BIN)
+	sudo chmod +x $(REMOTE_BIN)
+	sudo mv /tmp/$(SERVICE).service /etc/systemd/system/$(SERVICE).service
+	sudo mkdir -p /etc/exeunt-autoscaler
+	sudo mv /tmp/autoscaler-config.json /etc/exeunt-autoscaler/config.json
+	sudo chmod 644 /etc/exeunt-autoscaler/config.json
+	sudo mkdir -p /var/lib/exeunt-autoscaler
+	sudo chown $$(whoami) /var/lib/exeunt-autoscaler
+	sudo systemctl daemon-reload
+	sudo systemctl enable $(SERVICE)
+	sudo systemctl start $(SERVICE)
+	sleep 2
+	sudo systemctl status $(SERVICE) --no-pager
+	REMOTE
+	rm -f $(BINARY)
+
+start:
+	ssh $(HOST) sudo systemctl start $(SERVICE)
+
+stop:
+	ssh $(HOST) sudo systemctl stop $(SERVICE)
+
+restart: build
+	scp $(BINARY) $(HOST):/tmp/$(BINARY)
+	ssh $(HOST) 'sudo systemctl stop $(SERVICE); sudo mv /tmp/$(BINARY) $(REMOTE_BIN); sudo chmod +x $(REMOTE_BIN); sudo systemctl start $(SERVICE)'
+	rm -f $(BINARY)
+
+status:
+	ssh $(HOST) sudo systemctl status $(SERVICE) --no-pager
+
+logs:
+	ssh $(HOST) sudo journalctl -u $(SERVICE) --no-pager -n 50
+
+clean:
+	rm -f $(BINARY)

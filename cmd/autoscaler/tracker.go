@@ -25,6 +25,7 @@ type VMRecord struct {
 	Repo      string   `json:"repo"`
 	Status    VMStatus `json:"status"`
 	Labels    []string `json:"labels"`
+	Backend   string   `json:"backend"`
 	CreatedAt string   `json:"created_at"`
 }
 
@@ -43,7 +44,7 @@ func NewTracker(filePath string, logger *slog.Logger) *Tracker {
 	}
 }
 
-func (t *Tracker) Add(jobID int64, vmName, repo string, labels []string) {
+func (t *Tracker) Add(jobID int64, vmName, repo, backend string, labels []string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -53,9 +54,22 @@ func (t *Tracker) Add(jobID int64, vmName, repo string, labels []string) {
 		Repo:      repo,
 		Status:    StatusProvisioning,
 		Labels:    labels,
+		Backend:   backend,
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	t.saveLocked()
+}
+
+func (t *Tracker) CountByBackend(backend string) int {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	count := 0
+	for _, r := range t.vms {
+		if r.Backend == backend {
+			count++
+		}
+	}
+	return count
 }
 
 func (t *Tracker) Get(jobID int64) (*VMRecord, bool) {

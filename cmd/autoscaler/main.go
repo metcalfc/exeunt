@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -38,15 +39,23 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Build backends from config
 	ssh := &RealSSHExecutor{}
+	backends, err := buildBackends(cfg, ssh, logger)
+	if err != nil {
+		logger.Error("build backends", "error", err)
+		os.Exit(1)
+	}
+
+	router := NewRouter(backends, tracker, logger)
 	gh := NewGitHubClient(cfg.GitHubToken)
-	provisioner := NewProvisioner(cfg, tracker, ssh, gh, logger)
+	provisioner := NewProvisioner(cfg, tracker, router, gh, logger)
 	server := NewServer(cfg, provisioner, tracker, logger)
 
 	// Start reconciliation loop
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go reconcileLoop(ctx, tracker, ssh, logger)
+	go reconcileLoop(ctx, tracker, backends, logger)
 
 	// Handle shutdown signals
 	sigCh := make(chan os.Signal, 1)
@@ -59,10 +68,21 @@ func main() {
 		}
 	}()
 
+	// Log backend summary
+	for _, b := range backends {
+		logger.Info("backend registered",
+			"name", b.Name(),
+			"type", b.Type(),
+			"max_runners", b.MaxRunners(),
+			"labels", b.Labels(),
+			"priority", b.Priority(),
+		)
+	}
+
 	logger.Info("autoscaler started",
 		"port", cfg.Port,
 		"repo", cfg.Repo,
-		"max_vms", cfg.MaxVMs,
+		"backends", len(backends),
 		"image", cfg.RunnerImage,
 	)
 
@@ -76,11 +96,32 @@ func main() {
 		logger.Error("shutdown error", "error", err)
 	}
 
-	cancel() // Stop reconciliation loop
+	cancel()
 	logger.Info("autoscaler stopped")
 }
 
-func reconcileLoop(ctx context.Context, tracker *Tracker, ssh SSHExecutor, logger *slog.Logger) {
+func buildBackends(cfg *Config, ssh SSHExecutor, logger *slog.Logger) ([]Backend, error) {
+	var backends []Backend
+	for _, bc := range cfg.Backends {
+		switch bc.Type {
+		case "exedev":
+			backends = append(backends, NewExeDevBackend(bc, cfg.RunnerImage, ssh, logger))
+		case "docker":
+			if bc.Host == "" {
+				return nil, fmt.Errorf("backend %q: docker backend requires host", bc.Name)
+			}
+			backends = append(backends, NewDockerBackend(bc, cfg.RunnerImage, logger))
+		default:
+			return nil, fmt.Errorf("backend %q: unknown type %q", bc.Name, bc.Type)
+		}
+	}
+	if len(backends) == 0 {
+		return nil, fmt.Errorf("no backends configured")
+	}
+	return backends, nil
+}
+
+func reconcileLoop(ctx context.Context, tracker *Tracker, backends []Backend, logger *slog.Logger) {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 
@@ -89,29 +130,30 @@ func reconcileLoop(ctx context.Context, tracker *Tracker, ssh SSHExecutor, logge
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			reconcile(ctx, tracker, ssh, logger)
+			reconcile(ctx, tracker, backends, logger)
 		}
 	}
 }
 
-func reconcile(ctx context.Context, tracker *Tracker, ssh SSHExecutor, logger *slog.Logger) {
-	vms, err := ssh.ListVMs(ctx)
-	if err != nil {
-		logger.Error("reconcile: list VMs", "error", err)
-		return
+func reconcile(ctx context.Context, tracker *Tracker, backends []Backend, logger *slog.Logger) {
+	// Build set of existing runners across all backends
+	existing := make(map[string]bool)
+	for _, b := range backends {
+		runners, err := b.ListRunners(ctx)
+		if err != nil {
+			logger.Error("reconcile: list runners", "backend", b.Name(), "error", err)
+			continue
+		}
+		for _, name := range runners {
+			existing[name] = true
+		}
 	}
 
-	// Build set of existing VM names
-	existing := make(map[string]bool, len(vms))
-	for _, vm := range vms {
-		existing[vm.VMName] = true
-	}
-
-	// Remove tracker entries for VMs that no longer exist
+	// Remove tracker entries for runners that no longer exist
 	for _, record := range tracker.ActiveVMs() {
 		if !existing[record.VMName] {
-			logger.Warn("reconcile: VM no longer exists, removing from tracker",
-				"vm", record.VMName, "job_id", record.JobID)
+			logger.Warn("reconcile: runner no longer exists, removing from tracker",
+				"vm", record.VMName, "job_id", record.JobID, "backend", record.Backend)
 			tracker.Remove(record.JobID)
 		}
 	}

@@ -18,7 +18,7 @@ func newTestTracker(t *testing.T) *Tracker {
 func TestTrackerAddGetRemove(t *testing.T) {
 	tr := newTestTracker(t)
 
-	tr.Add(100, "exeunt-abc123", "metcalfc/exeunt", []string{"exe"})
+	tr.Add(100, "exeunt-abc123", "metcalfc/exeunt", "test", []string{"exe"})
 
 	if tr.Count() != 1 {
 		t.Fatalf("count = %d, want 1", tr.Count())
@@ -51,7 +51,7 @@ func TestTrackerAddGetRemove(t *testing.T) {
 func TestTrackerUpdate(t *testing.T) {
 	tr := newTestTracker(t)
 
-	tr.Add(200, "exeunt-def456", "metcalfc/exeunt", []string{"exe"})
+	tr.Add(200, "exeunt-def456", "metcalfc/exeunt", "test", []string{"exe"})
 	tr.Update(200, StatusReady)
 
 	record, _ := tr.Get(200)
@@ -79,7 +79,7 @@ func TestTrackerHasJob(t *testing.T) {
 		t.Error("expected HasJob to return false for nonexistent job")
 	}
 
-	tr.Add(100, "exeunt-abc123", "metcalfc/exeunt", []string{"exe"})
+	tr.Add(100, "exeunt-abc123", "metcalfc/exeunt", "test", []string{"exe"})
 	if !tr.HasJob(100) {
 		t.Error("expected HasJob to return true")
 	}
@@ -88,9 +88,9 @@ func TestTrackerHasJob(t *testing.T) {
 func TestTrackerActiveVMs(t *testing.T) {
 	tr := newTestTracker(t)
 
-	tr.Add(1, "exeunt-a", "metcalfc/exeunt", []string{"exe"})
-	tr.Add(2, "exeunt-b", "metcalfc/exeunt", []string{"exe"})
-	tr.Add(3, "exeunt-c", "metcalfc/exeunt", []string{"exe"})
+	tr.Add(1, "exeunt-a", "metcalfc/exeunt", "test", []string{"exe"})
+	tr.Add(2, "exeunt-b", "metcalfc/exeunt", "test", []string{"exe"})
+	tr.Add(3, "exeunt-c", "metcalfc/exeunt", "test", []string{"exe"})
 
 	vms := tr.ActiveVMs()
 	if len(vms) != 3 {
@@ -105,8 +105,8 @@ func TestTrackerPersistence(t *testing.T) {
 
 	// Write state
 	tr1 := NewTracker(path, logger)
-	tr1.Add(100, "exeunt-abc123", "metcalfc/exeunt", []string{"exe"})
-	tr1.Add(200, "exeunt-def456", "metcalfc/exeunt", []string{"exe"})
+	tr1.Add(100, "exeunt-abc123", "metcalfc/exeunt", "test", []string{"exe"})
+	tr1.Add(200, "exeunt-def456", "metcalfc/exeunt", "test", []string{"exe"})
 	tr1.Update(200, StatusReady)
 
 	// Load into new tracker

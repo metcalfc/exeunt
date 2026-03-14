@@ -16,15 +16,15 @@ import (
 
 // MockSSHExecutor records calls and returns configurable results.
 type MockSSHExecutor struct {
-	mu         sync.Mutex
-	NewVMCalls []string
+	mu          sync.Mutex
+	NewVMCalls  []string
 	RemoveCalls []string
-	RunOnCalls []struct{ Name, Script string }
-	ListResult []VMInfo
-	NewVMErr   error
-	RemoveErr  error
-	RunOnErr   error
-	WaitErr    error
+	RunOnCalls  []struct{ Name, Script string }
+	ListResult  []VMInfo
+	NewVMErr    error
+	RemoveErr   error
+	RunOnErr    error
+	WaitErr     error
 }
 
 func (m *MockSSHExecutor) NewVM(_ context.Context, name, _ string) error {
@@ -66,16 +66,26 @@ func newTestServer(t *testing.T, mockSSH *MockSSHExecutor) (*Server, *Config) {
 		GitHubToken:   "ghp_test",
 		Repo:          "metcalfc/exeunt",
 		Port:          0,
-		MaxVMs:        5,
 		RunnerImage:   "ghcr.io/metcalfc/exeunt-runner:latest",
-		RunnerLabels:  []string{"exe"},
 		StateFile:     filepath.Join(dir, "state.json"),
 		LogLevel:      "error",
+		Backends: []BackendConfig{
+			{
+				Name:       "test-exedev",
+				Type:       "exedev",
+				MaxRunners: 5,
+				Labels:     []string{"exe"},
+				Priority:   10,
+			},
+		},
 	}
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	tracker := NewTracker(cfg.StateFile, logger)
+
+	backend := NewExeDevBackend(cfg.Backends[0], cfg.RunnerImage, mockSSH, logger)
+	router := NewRouter([]Backend{backend}, tracker, logger)
 	gh := NewGitHubClient(cfg.GitHubToken)
-	provisioner := NewProvisioner(cfg, tracker, mockSSH, gh, logger)
+	provisioner := NewProvisioner(cfg, tracker, router, gh, logger)
 	server := NewServer(cfg, provisioner, tracker, logger)
 	return server, cfg
 }
@@ -200,7 +210,6 @@ func TestWebhookIgnoresExeBuilderLabel(t *testing.T) {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
 	}
 
-	// Give goroutine time to run (it shouldn't)
 	time.Sleep(50 * time.Millisecond)
 
 	mockSSH.mu.Lock()
@@ -228,7 +237,6 @@ func TestWebhookQueuedProvisions(t *testing.T) {
 	}
 
 	// Give the provisioning goroutine time to call NewVM
-	// (it will fail at JIT config since we have a fake token, but should get to NewVM)
 	time.Sleep(200 * time.Millisecond)
 
 	mockSSH.mu.Lock()
@@ -243,7 +251,7 @@ func TestWebhookCompletedDestroys(t *testing.T) {
 	server, _ := newTestServer(t, mockSSH)
 
 	// Pre-populate tracker
-	server.tracker.Add(100, "exeunt-abc123", "metcalfc/exeunt", []string{"exe"})
+	server.tracker.Add(100, "exeunt-abc123", "metcalfc/exeunt", "test-exedev", []string{"exe"})
 	server.tracker.Update(100, StatusReady)
 	// Put a token in the semaphore so Destroy can release it
 	server.provisioner.semaphore <- struct{}{}
@@ -260,7 +268,6 @@ func TestWebhookCompletedDestroys(t *testing.T) {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
 	}
 
-	// Give the destroy goroutine time to run
 	time.Sleep(100 * time.Millisecond)
 
 	mockSSH.mu.Lock()
@@ -306,8 +313,7 @@ func TestWebhookDuplicateQueued(t *testing.T) {
 	mockSSH := &MockSSHExecutor{}
 	server, _ := newTestServer(t, mockSSH)
 
-	// Pre-populate tracker to simulate already-provisioned
-	server.tracker.Add(100, "exeunt-abc123", "metcalfc/exeunt", []string{"exe"})
+	server.tracker.Add(100, "exeunt-abc123", "metcalfc/exeunt", "test-exedev", []string{"exe"})
 
 	event := WorkflowJobEvent{Action: "queued"}
 	event.WorkflowJob.ID = 100
@@ -339,11 +345,17 @@ func TestReconcile(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	tracker := NewTracker(filepath.Join(dir, "state.json"), logger)
 
-	// Add a VM that still exists and one that doesn't
-	tracker.Add(1, "exeunt-exists", "metcalfc/exeunt", []string{"exe"})
-	tracker.Add(2, "exeunt-gone", "metcalfc/exeunt", []string{"exe"})
+	tracker.Add(1, "exeunt-exists", "metcalfc/exeunt", "test-exedev", []string{"exe"})
+	tracker.Add(2, "exeunt-gone", "metcalfc/exeunt", "test-exedev", []string{"exe"})
 
-	reconcile(context.Background(), tracker, mockSSH, logger)
+	backend := NewExeDevBackend(BackendConfig{
+		Name:       "test-exedev",
+		Type:       "exedev",
+		MaxRunners: 5,
+		Labels:     []string{"exe"},
+	}, "test:latest", mockSSH, logger)
+
+	reconcile(context.Background(), tracker, []Backend{backend}, logger)
 
 	if tracker.Count() != 1 {
 		t.Fatalf("count after reconcile = %d, want 1", tracker.Count())

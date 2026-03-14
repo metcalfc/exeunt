@@ -34,6 +34,8 @@ func setRequiredEnv(t *testing.T) {
 	setEnv(t, "AUTOSCALER_WEBHOOK_SECRET", "test-secret")
 	setEnv(t, "AUTOSCALER_GITHUB_TOKEN", "ghp_test")
 	setEnv(t, "AUTOSCALER_REPO", "metcalfc/exeunt")
+	// Point to nonexistent config file so it uses defaults
+	setEnv(t, "AUTOSCALER_CONFIG", "/tmp/nonexistent-autoscaler-config.json")
 }
 
 func TestLoadConfigDefaults(t *testing.T) {
@@ -47,26 +49,25 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.Port != 8080 {
 		t.Errorf("port = %d, want 8080", cfg.Port)
 	}
-	if cfg.MaxVMs != 5 {
-		t.Errorf("max_vms = %d, want 5", cfg.MaxVMs)
-	}
 	if cfg.RunnerImage != "ghcr.io/metcalfc/exeunt-runner:latest" {
 		t.Errorf("image = %q, want default", cfg.RunnerImage)
 	}
-	if len(cfg.RunnerLabels) != 1 || cfg.RunnerLabels[0] != "exe" {
-		t.Errorf("labels = %v, want [exe]", cfg.RunnerLabels)
-	}
 	if cfg.LogLevel != "info" {
 		t.Errorf("log_level = %q, want info", cfg.LogLevel)
+	}
+	// Default backend
+	if len(cfg.Backends) != 1 {
+		t.Fatalf("backends = %d, want 1", len(cfg.Backends))
+	}
+	if cfg.Backends[0].Type != "exedev" {
+		t.Errorf("default backend type = %q, want exedev", cfg.Backends[0].Type)
 	}
 }
 
 func TestLoadConfigOverrides(t *testing.T) {
 	setRequiredEnv(t)
 	setEnv(t, "AUTOSCALER_PORT", "9090")
-	setEnv(t, "AUTOSCALER_MAX_VMS", "3")
 	setEnv(t, "AUTOSCALER_RUNNER_IMAGE", "custom:latest")
-	setEnv(t, "AUTOSCALER_RUNNER_LABELS", "exe,large")
 	setEnv(t, "AUTOSCALER_LOG_LEVEL", "debug")
 
 	cfg, err := LoadConfig()
@@ -77,14 +78,8 @@ func TestLoadConfigOverrides(t *testing.T) {
 	if cfg.Port != 9090 {
 		t.Errorf("port = %d, want 9090", cfg.Port)
 	}
-	if cfg.MaxVMs != 3 {
-		t.Errorf("max_vms = %d, want 3", cfg.MaxVMs)
-	}
 	if cfg.RunnerImage != "custom:latest" {
 		t.Errorf("image = %q, want custom:latest", cfg.RunnerImage)
-	}
-	if len(cfg.RunnerLabels) != 2 {
-		t.Errorf("labels = %v, want [exe large]", cfg.RunnerLabels)
 	}
 }
 
@@ -118,15 +113,5 @@ func TestLoadConfigInvalidPort(t *testing.T) {
 	_, err := LoadConfig()
 	if err == nil {
 		t.Error("expected error for invalid port")
-	}
-}
-
-func TestLoadConfigInvalidMaxVMs(t *testing.T) {
-	setRequiredEnv(t)
-	setEnv(t, "AUTOSCALER_MAX_VMS", "abc")
-
-	_, err := LoadConfig()
-	if err == nil {
-		t.Error("expected error for invalid max_vms")
 	}
 }

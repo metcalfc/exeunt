@@ -127,7 +127,7 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 		"status":     "ok",
 		"uptime":     time.Since(s.startTime).String(),
 		"active_vms": s.tracker.Count(),
-		"max_vms":    s.config.MaxVMs,
+		"max_vms":    len(s.config.Backends),
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
@@ -137,7 +137,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	resp := map[string]any{
 		"active_vms": s.tracker.ActiveVMs(),
 		"count":      s.tracker.Count(),
-		"max_vms":    s.config.MaxVMs,
+		"max_vms":    len(s.config.Backends),
 		"uptime":     time.Since(s.startTime).String(),
 	}
 	w.Header().Set("Content-Type", "application/json")
