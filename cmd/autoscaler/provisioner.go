@@ -50,15 +50,6 @@ func (p *Provisioner) Provision(ctx context.Context, event WorkflowJobEvent) {
 		return
 	}
 
-	// Route to best backend
-	backend := p.router.SelectBackend(event.WorkflowJob.Labels)
-	if backend == nil {
-		log.Warn("no backend available for labels", "labels", event.WorkflowJob.Labels)
-		return
-	}
-
-	log = log.With("backend", backend.Name(), "backend_type", backend.Type())
-
 	// Acquire semaphore
 	select {
 	case p.semaphore <- struct{}{}:
@@ -67,14 +58,33 @@ func (p *Provisioner) Provision(ctx context.Context, event WorkflowJobEvent) {
 		return
 	}
 
-	p.tracker.Add(jobID, vmName, repo, backend.Name(), event.WorkflowJob.Labels)
-	log.Info("provisioning runner")
+	// Try backends in priority order, falling back on failure
+	tried := make(map[string]bool)
+	for {
+		backend := p.router.SelectBackendExcluding(event.WorkflowJob.Labels, tried)
+		if backend == nil {
+			if len(tried) == 0 {
+				log.Warn("no backend available for labels", "labels", event.WorkflowJob.Labels)
+			} else {
+				log.Error("all backends failed", "tried", len(tried))
+			}
+			<-p.semaphore
+			return
+		}
 
-	if err := p.provision(ctx, log, jobID, vmName, repo, event.WorkflowJob.Labels, backend); err != nil {
-		log.Error("provisioning failed", "error", err)
-		_ = backend.DestroyRunner(ctx, vmName)
-		p.tracker.Remove(jobID)
-		<-p.semaphore
+		tried[backend.Name()] = true
+		bLog := log.With("backend", backend.Name(), "backend_type", backend.Type())
+
+		p.tracker.Add(jobID, vmName, repo, backend.Name(), event.WorkflowJob.Labels)
+		bLog.Info("provisioning runner")
+
+		if err := p.provision(ctx, bLog, jobID, vmName, repo, event.WorkflowJob.Labels, backend); err != nil {
+			bLog.Error("provisioning failed, trying next backend", "error", err)
+			_ = backend.DestroyRunner(ctx, vmName)
+			p.tracker.Remove(jobID)
+			continue
+		}
+		return
 	}
 }
 
