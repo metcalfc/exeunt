@@ -88,6 +88,18 @@ func (p *Provisioner) Provision(ctx context.Context, event WorkflowJobEvent) {
 			p.tracker.Remove(jobID)
 			continue
 		}
+
+		// Check if a completed event arrived while we were provisioning.
+		// If so, the runner we just created has no job to run — tear it down.
+		if p.tracker.WasCompleted(jobID) {
+			log.Warn("job completed during provisioning, tearing down")
+			if err := backend.DestroyRunner(ctx, vmName); err != nil {
+				log.Warn("cleanup after late completion failed", "error", err)
+			}
+			p.tracker.Remove(jobID)
+			<-p.semaphore
+			return
+		}
 		return
 	}
 }
@@ -129,7 +141,13 @@ func (p *Provisioner) Destroy(ctx context.Context, event WorkflowJobEvent) {
 
 	record, ok := p.tracker.Get(jobID)
 	if !ok {
-		log.Debug("job not tracked, ignoring completed event")
+		// Job not tracked. This can happen if:
+		// 1. We never provisioned for this job (no exe label, different repo)
+		// 2. Provisioning is still in-flight (race with completed event)
+		// 3. Reconcile already cleaned it up
+		// Mark the job ID so in-flight provisioning can detect it completed.
+		p.tracker.MarkCompleted(jobID)
+		log.Debug("job not tracked, marked as completed for in-flight check")
 		return
 	}
 
