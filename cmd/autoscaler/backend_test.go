@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"testing"
@@ -173,5 +174,44 @@ func TestSelectBackendLoadBalancing(t *testing.T) {
 	}
 	if selected.Name() != "b" {
 		t.Errorf("got %q, want %q (lower count wins at equal priority)", selected.Name(), "b")
+	}
+}
+
+func TestExeDevBackendListRunnersError(t *testing.T) {
+	logger := newTestLogger()
+	ssh := &MockSSHExecutor{ListErr: fmt.Errorf("connection refused")}
+	backend := NewExeDevBackend(BackendConfig{
+		Name: "test", Type: "exedev", MaxRunners: 5, Labels: []string{"exe"},
+	}, "test:latest", ssh, logger)
+
+	_, err := backend.ListRunners(context.Background())
+	if err == nil {
+		t.Fatal("expected error from ListRunners when SSH fails")
+	}
+}
+
+func TestExeDevBackendCreateRunnerSSHError(t *testing.T) {
+	logger := newTestLogger()
+	ssh := &MockSSHExecutor{NewVMErr: fmt.Errorf("ssh timeout")}
+	backend := NewExeDevBackend(BackendConfig{
+		Name: "test", Type: "exedev", MaxRunners: 5, Labels: []string{"exe"},
+	}, "test:latest", ssh, logger)
+
+	err := backend.CreateRunner(context.Background(), "test-vm", "test:latest")
+	if err == nil {
+		t.Fatal("expected error from CreateRunner when NewVM fails")
+	}
+}
+
+func TestExeDevBackendCreateRunnerWaitSSHError(t *testing.T) {
+	logger := newTestLogger()
+	ssh := &MockSSHExecutor{WaitErr: fmt.Errorf("VM not reachable")}
+	backend := NewExeDevBackend(BackendConfig{
+		Name: "test", Type: "exedev", MaxRunners: 5, Labels: []string{"exe"},
+	}, "test:latest", ssh, logger)
+
+	err := backend.CreateRunner(context.Background(), "test-vm", "test:latest")
+	if err == nil {
+		t.Fatal("expected error from CreateRunner when WaitForSSH fails")
 	}
 }

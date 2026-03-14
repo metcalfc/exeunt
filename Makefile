@@ -5,13 +5,25 @@ REMOTE_BIN = /usr/local/bin/$(BINARY)
 SERVICE = exeunt-autoscaler
 CONFIG = $(shell test -f deploy/config.local.json && echo deploy/config.local.json || echo deploy/config.json)
 
-.PHONY: build test deploy start stop restart status logs clean
+.PHONY: build test test-integration bats lint check deploy start stop restart status logs clean
 
 build:
 	cd $(BUILD_DIR) && GOOS=linux GOARCH=amd64 go build -o ../../$(BINARY) .
 
 test:
-	cd $(BUILD_DIR) && go test -v -count=1 ./...
+	cd $(BUILD_DIR) && go test -short -v -count=1 -race ./...
+
+test-integration:
+	cd $(BUILD_DIR) && go test -v -count=1 -timeout 5m ./...
+
+bats:
+	bats tests/
+
+lint:
+	actionlint
+	shellcheck scripts/*.sh
+
+check: lint test bats
 
 deploy: build
 	scp $(BINARY) $(HOST):/tmp/$(BINARY)
