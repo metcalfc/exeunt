@@ -211,10 +211,59 @@ func TestReconcileEmptyTracker(t *testing.T) {
 		Name: "test", Type: "exedev", MaxRunners: 5, Labels: []string{"exe"},
 	}, "test:latest", ssh, logger)
 
-	// Empty tracker + backends with VMs — reconcile should not crash
+	// Empty tracker + backends with VMs — reconcile should destroy orphans
 	reconcile(context.Background(), tracker, []Backend{backend}, logger)
 
 	if tracker.Count() != 0 {
-		t.Errorf("count = %d, want 0 (no tracked VMs to reconcile)", tracker.Count())
+		t.Errorf("count = %d, want 0", tracker.Count())
+	}
+	// The orphan VM should have been destroyed
+	ssh.mu.Lock()
+	defer ssh.mu.Unlock()
+	if len(ssh.RemoveCalls) != 1 || ssh.RemoveCalls[0] != "exeunt-orphan" {
+		t.Errorf("RemoveCalls = %v, want [exeunt-orphan]", ssh.RemoveCalls)
+	}
+}
+
+func TestReconcileStaleReady(t *testing.T) {
+	logger := newTestLogger()
+	dir := t.TempDir()
+	tracker := NewTracker(filepath.Join(dir, "state.json"), logger)
+
+	// Add a VM that's been "ready" for 15 minutes — should be cleaned up
+	staleTime := time.Now().UTC().Add(-15 * time.Minute).Format(time.RFC3339)
+	tracker.Add(1, "exeunt-stale", "repo", "test-backend", []string{"exe"})
+	tracker.Update(1, StatusReady)
+	// Manually set CreatedAt to the past
+	func() {
+		tracker.mu.Lock()
+		defer tracker.mu.Unlock()
+		tracker.vms[1].CreatedAt = staleTime
+	}()
+
+	// Add a fresh "ready" VM — should survive
+	tracker.Add(2, "exeunt-fresh", "repo", "test-backend", []string{"exe"})
+	tracker.Update(2, StatusReady)
+
+	ssh := &MockSSHExecutor{ListResult: []VMInfo{
+		{VMName: "exeunt-stale"},
+		{VMName: "exeunt-fresh"},
+	}}
+	backend := NewExeDevBackend(BackendConfig{
+		Name: "test-backend", Type: "exedev", MaxRunners: 5, Labels: []string{"exe"},
+	}, "test:latest", ssh, logger)
+
+	reconcile(context.Background(), tracker, []Backend{backend}, logger)
+
+	if tracker.HasJob(1) {
+		t.Error("expected stale job 1 to be removed")
+	}
+	if !tracker.HasJob(2) {
+		t.Error("expected fresh job 2 to survive")
+	}
+	ssh.mu.Lock()
+	defer ssh.mu.Unlock()
+	if len(ssh.RemoveCalls) != 1 || ssh.RemoveCalls[0] != "exeunt-stale" {
+		t.Errorf("RemoveCalls = %v, want [exeunt-stale]", ssh.RemoveCalls)
 	}
 }

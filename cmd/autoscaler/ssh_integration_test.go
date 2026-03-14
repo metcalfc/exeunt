@@ -33,10 +33,8 @@ func TestRealSSHExecutorListVMs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListVMs: %v", err)
 	}
-	// Should have at least one VM (pre-existing)
-	if len(vms) == 0 {
-		t.Fatal("expected at least one VM")
-	}
+	// ListVMs may return zero VMs if the autoscaler cleaned up everything.
+	// Just verify we got a valid (possibly empty) result without errors.
 	for _, vm := range vms {
 		if vm.VMName == "" {
 			t.Error("VMInfo.VMName is empty")

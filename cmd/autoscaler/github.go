@@ -35,7 +35,11 @@ func NewGitHubClient(token string) *GitHubClient {
 	}
 }
 
-func (c *GitHubClient) GenerateJITConfig(ctx context.Context, repo, vmName string, labels []string) (string, error) {
+// GenerateJITConfig creates an ephemeral runner registration in GitHub and
+// returns the encoded JIT config string and the runner ID. The caller must
+// call RemoveRunner if StartRunner fails, otherwise the registration leaks
+// and causes 409 "Already exists" errors on subsequent attempts.
+func (c *GitHubClient) GenerateJITConfig(ctx context.Context, repo, vmName string, labels []string) (string, int64, error) {
 	// Always include self-hosted — JIT runners don't auto-add it
 	allLabels := []string{"self-hosted"}
 	seen := map[string]bool{"self-hosted": true}
@@ -53,13 +57,13 @@ func (c *GitHubClient) GenerateJITConfig(ctx context.Context, repo, vmName strin
 		WorkFolder:    "_work",
 	})
 	if err != nil {
-		return "", fmt.Errorf("marshal jit request: %w", err)
+		return "", 0, fmt.Errorf("marshal jit request: %w", err)
 	}
 
 	url := fmt.Sprintf("https://api.github.com/repos/%s/actions/runners/generate-jitconfig", repo)
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
-		return "", fmt.Errorf("create request: %w", err)
+		return "", 0, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.Token)
 	req.Header.Set("Accept", "application/vnd.github+json")
@@ -67,27 +71,52 @@ func (c *GitHubClient) GenerateJITConfig(ctx context.Context, repo, vmName strin
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("jit config request: %w", err)
+		return "", 0, fmt.Errorf("jit config request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("read response: %w", err)
+		return "", 0, fmt.Errorf("read response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusCreated {
-		return "", fmt.Errorf("jit config API returned %d: %s", resp.StatusCode, string(respBody))
+		return "", 0, fmt.Errorf("jit config API returned %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	var jitResp jitConfigResponse
 	if err := json.Unmarshal(respBody, &jitResp); err != nil {
-		return "", fmt.Errorf("parse jit response: %w", err)
+		return "", 0, fmt.Errorf("parse jit response: %w", err)
 	}
 
 	if jitResp.EncodedJITConfig == "" {
-		return "", fmt.Errorf("empty jit config in response: %s", string(respBody))
+		return "", 0, fmt.Errorf("empty jit config in response: %s", string(respBody))
 	}
 
-	return jitResp.EncodedJITConfig, nil
+	return jitResp.EncodedJITConfig, jitResp.Runner.ID, nil
+}
+
+// RemoveRunner deletes a runner registration from GitHub. This must be called
+// when provisioning fails after GenerateJITConfig to prevent stale registrations.
+func (c *GitHubClient) RemoveRunner(ctx context.Context, repo string, runnerID int64) error {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/actions/runners/%d", repo, runnerID)
+	req, err := http.NewRequestWithContext(ctx, "DELETE", url, nil)
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("remove runner request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("remove runner API returned %d: %s", resp.StatusCode, string(respBody))
+	}
+	return nil
 }

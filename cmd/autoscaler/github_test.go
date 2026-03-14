@@ -29,7 +29,7 @@ func newGitHubClientWithServer(server *httptest.Server) *GitHubClient {
 }
 
 // generateJITConfigWithURL calls the JIT config endpoint using a custom base URL.
-func generateJITConfigWithURL(ctx context.Context, client *GitHubClient, baseURL, repo, vmName string, labels []string) (string, error) {
+func generateJITConfigWithURL(ctx context.Context, client *GitHubClient, baseURL, repo, vmName string, labels []string) (string, int64, error) {
 	// We need to replicate GenerateJITConfig but with a different URL.
 	// Since we can't modify the struct, we'll use an HTTP test that intercepts all traffic.
 	return client.GenerateJITConfig(ctx, repo, vmName, labels)
@@ -80,12 +80,15 @@ func TestGenerateJITConfig(t *testing.T) {
 	}
 	client.HTTPClient = &http.Client{Transport: transport}
 
-	config, err := client.GenerateJITConfig(context.Background(), "metcalfc/exeunt", "test-vm", []string{"exe"})
+	config, runnerID, err := client.GenerateJITConfig(context.Background(), "metcalfc/exeunt", "test-vm", []string{"exe"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if config != "base64-jit-config-data" {
 		t.Errorf("config = %q, want %q", config, "base64-jit-config-data")
+	}
+	if runnerID != 42 {
+		t.Errorf("runnerID = %d, want 42", runnerID)
 	}
 }
 
@@ -108,7 +111,7 @@ func TestGenerateJITConfigLabels(t *testing.T) {
 
 	t.Run("self-hosted auto-added", func(t *testing.T) {
 		receivedLabels = nil
-		_, err := client.GenerateJITConfig(context.Background(), "org/repo", "vm", []string{"exe"})
+		_, _, err := client.GenerateJITConfig(context.Background(), "org/repo", "vm", []string{"exe"})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -122,7 +125,7 @@ func TestGenerateJITConfigLabels(t *testing.T) {
 
 	t.Run("self-hosted dedup", func(t *testing.T) {
 		receivedLabels = nil
-		_, err := client.GenerateJITConfig(context.Background(), "org/repo", "vm", []string{"self-hosted", "exe"})
+		_, _, err := client.GenerateJITConfig(context.Background(), "org/repo", "vm", []string{"self-hosted", "exe"})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -151,7 +154,7 @@ func TestGenerateJITConfigError(t *testing.T) {
 		HTTPClient: &http.Client{Transport: &urlRewriteTransport{base: server.Client().Transport, baseURL: server.URL}},
 	}
 
-	_, err := client.GenerateJITConfig(context.Background(), "org/repo", "vm", []string{"exe"})
+	_, _, err := client.GenerateJITConfig(context.Background(), "org/repo", "vm", []string{"exe"})
 	if err == nil {
 		t.Fatal("expected error for non-201 status")
 	}
@@ -169,7 +172,7 @@ func TestGenerateJITConfigEmpty(t *testing.T) {
 		HTTPClient: &http.Client{Transport: &urlRewriteTransport{base: server.Client().Transport, baseURL: server.URL}},
 	}
 
-	_, err := client.GenerateJITConfig(context.Background(), "org/repo", "vm", []string{"exe"})
+	_, _, err := client.GenerateJITConfig(context.Background(), "org/repo", "vm", []string{"exe"})
 	if err == nil {
 		t.Fatal("expected error for empty jit config")
 	}
@@ -186,7 +189,7 @@ func TestGenerateJITConfigConnectionError(t *testing.T) {
 		HTTPClient: &http.Client{Transport: &urlRewriteTransport{base: http.DefaultTransport, baseURL: serverURL}},
 	}
 
-	_, err := client.GenerateJITConfig(context.Background(), "org/repo", "vm", []string{"exe"})
+	_, _, err := client.GenerateJITConfig(context.Background(), "org/repo", "vm", []string{"exe"})
 	if err == nil {
 		t.Fatal("expected error for connection refused")
 	}
@@ -204,7 +207,7 @@ func TestGenerateJITConfigInvalidJSON(t *testing.T) {
 		HTTPClient: &http.Client{Transport: &urlRewriteTransport{base: server.Client().Transport, baseURL: server.URL}},
 	}
 
-	_, err := client.GenerateJITConfig(context.Background(), "org/repo", "vm", []string{"exe"})
+	_, _, err := client.GenerateJITConfig(context.Background(), "org/repo", "vm", []string{"exe"})
 	if err == nil {
 		t.Fatal("expected error for invalid JSON response")
 	}
@@ -225,9 +228,74 @@ func TestGenerateJITConfigCancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	_, err := client.GenerateJITConfig(ctx, "org/repo", "vm", []string{"exe"})
+	_, _, err := client.GenerateJITConfig(ctx, "org/repo", "vm", []string{"exe"})
 	if err == nil {
 		t.Fatal("expected error for cancelled context")
+	}
+}
+
+func TestRemoveRunner(t *testing.T) {
+	var receivedMethod, receivedPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedMethod = r.Method
+		receivedPath = r.URL.Path
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client := &GitHubClient{
+		Token:      "test-token",
+		HTTPClient: &http.Client{Transport: &urlRewriteTransport{base: server.Client().Transport, baseURL: server.URL}},
+	}
+
+	err := client.RemoveRunner(context.Background(), "org/repo", 42)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if receivedMethod != "DELETE" {
+		t.Errorf("method = %q, want DELETE", receivedMethod)
+	}
+	if receivedPath != "/repos/org/repo/actions/runners/42" {
+		t.Errorf("path = %q, want /repos/org/repo/actions/runners/42", receivedPath)
+	}
+}
+
+func TestRemoveRunnerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"message":"Not Found"}`)
+	}))
+	defer server.Close()
+
+	client := &GitHubClient{
+		Token:      "test-token",
+		HTTPClient: &http.Client{Transport: &urlRewriteTransport{base: server.Client().Transport, baseURL: server.URL}},
+	}
+
+	err := client.RemoveRunner(context.Background(), "org/repo", 999)
+	if err == nil {
+		t.Fatal("expected error for 404 response")
+	}
+}
+
+func TestGenerateJITConfigReturnsRunnerID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, `{"encoded_jit_config":"cfg","runner":{"id":12345}}`)
+	}))
+	defer server.Close()
+
+	client := &GitHubClient{
+		Token:      "test-token",
+		HTTPClient: &http.Client{Transport: &urlRewriteTransport{base: server.Client().Transport, baseURL: server.URL}},
+	}
+
+	_, runnerID, err := client.GenerateJITConfig(context.Background(), "org/repo", "vm", []string{"exe"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if runnerID != 12345 {
+		t.Errorf("runnerID = %d, want 12345", runnerID)
 	}
 }
 
