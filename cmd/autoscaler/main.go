@@ -122,7 +122,7 @@ func buildBackends(cfg *Config, ssh SSHExecutor, logger *slog.Logger) ([]Backend
 }
 
 func reconcileLoop(ctx context.Context, tracker *Tracker, backends []Backend, semaphore chan struct{}, logger *slog.Logger) {
-	ticker := time.NewTicker(5 * time.Minute)
+	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
 	for {
@@ -177,7 +177,7 @@ func reconcile(ctx context.Context, tracker *Tracker, backends []Backend, semaph
 
 	// Forward: remove tracker entries for runners that no longer exist,
 	// but skip VMs on backends we couldn't reach.
-	const staleTimeout = 10 * time.Minute
+	const staleTimeout = 2 * time.Minute
 	now := time.Now().UTC()
 	for _, record := range activeVMs {
 		if failedBackends[record.Backend] {

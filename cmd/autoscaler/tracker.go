@@ -30,10 +30,11 @@ type VMRecord struct {
 }
 
 type Tracker struct {
-	mu       sync.RWMutex
-	vms      map[int64]*VMRecord
-	filePath string
-	logger   *slog.Logger
+	mu        sync.RWMutex
+	vms       map[int64]*VMRecord
+	completed map[int64]bool // jobs that completed while provisioning was in-flight
+	filePath  string
+	logger    *slog.Logger
 }
 
 func NewTracker(filePath string, logger *slog.Logger) *Tracker {
@@ -43,9 +44,10 @@ func NewTracker(filePath string, logger *slog.Logger) *Tracker {
 		logger.Error("create state dir", "error", err, "path", dir)
 	}
 	return &Tracker{
-		vms:      make(map[int64]*VMRecord),
-		filePath: filePath,
-		logger:   logger,
+		vms:       make(map[int64]*VMRecord),
+		completed: make(map[int64]bool),
+		filePath:  filePath,
+		logger:    logger,
 	}
 }
 
@@ -134,6 +136,26 @@ func (t *Tracker) HasJob(jobID int64) bool {
 	defer t.mu.RUnlock()
 	_, ok := t.vms[jobID]
 	return ok
+}
+
+// MarkCompleted records that a job completed before provisioning finished.
+// This allows in-flight provisioners to detect that their job is done.
+func (t *Tracker) MarkCompleted(jobID int64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.completed[jobID] = true
+}
+
+// WasCompleted checks if a job was marked as completed during provisioning
+// and clears the mark.
+func (t *Tracker) WasCompleted(jobID int64) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.completed[jobID] {
+		delete(t.completed, jobID)
+		return true
+	}
+	return false
 }
 
 func (t *Tracker) Load() error {
