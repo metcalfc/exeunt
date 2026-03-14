@@ -37,6 +37,11 @@ type Tracker struct {
 }
 
 func NewTracker(filePath string, logger *slog.Logger) *Tracker {
+	// Create state directory once at init, not on every save.
+	dir := filepath.Dir(filePath)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		logger.Error("create state dir", "error", err, "path", dir)
+	}
 	return &Tracker{
 		vms:      make(map[int64]*VMRecord),
 		filePath: filePath,
@@ -57,7 +62,9 @@ func (t *Tracker) Add(jobID int64, vmName, repo, backend string, labels []string
 		Backend:   backend,
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
-	t.saveLocked()
+	if err := t.saveLocked(); err != nil {
+		t.logger.Error("persist state after add", "error", err, "job_id", jobID)
+	}
 }
 
 func (t *Tracker) CountByBackend(backend string) int {
@@ -84,7 +91,9 @@ func (t *Tracker) Update(jobID int64, status VMStatus) {
 	defer t.mu.Unlock()
 	if r, ok := t.vms[jobID]; ok {
 		r.Status = status
-		t.saveLocked()
+		if err := t.saveLocked(); err != nil {
+			t.logger.Error("persist state after update", "error", err, "job_id", jobID)
+		}
 	}
 }
 
@@ -92,7 +101,9 @@ func (t *Tracker) Remove(jobID int64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	delete(t.vms, jobID)
-	t.saveLocked()
+	if err := t.saveLocked(); err != nil {
+		t.logger.Error("persist state after remove", "error", err, "job_id", jobID)
+	}
 }
 
 func (t *Tracker) Count() int {
@@ -101,12 +112,12 @@ func (t *Tracker) Count() int {
 	return len(t.vms)
 }
 
-func (t *Tracker) ActiveVMs() []*VMRecord {
+func (t *Tracker) ActiveVMs() []VMRecord {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	result := make([]*VMRecord, 0, len(t.vms))
+	result := make([]VMRecord, 0, len(t.vms))
 	for _, r := range t.vms {
-		result = append(result, r)
+		result = append(result, *r)
 	}
 	return result
 }
@@ -145,7 +156,7 @@ func (t *Tracker) Load() error {
 }
 
 // saveLocked writes state to disk. Caller must hold t.mu.
-func (t *Tracker) saveLocked() {
+func (t *Tracker) saveLocked() error {
 	records := make([]*VMRecord, 0, len(t.vms))
 	for _, r := range t.vms {
 		records = append(records, r)
@@ -153,22 +164,15 @@ func (t *Tracker) saveLocked() {
 
 	data, err := json.MarshalIndent(records, "", "  ")
 	if err != nil {
-		t.logger.Error("marshal state", "error", err)
-		return
-	}
-
-	dir := filepath.Dir(t.filePath)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.logger.Error("create state dir", "error", err)
-		return
+		return fmt.Errorf("marshal state: %w", err)
 	}
 
 	tmp := t.filePath + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		t.logger.Error("write state tmp", "error", err)
-		return
+		return fmt.Errorf("write state: %w", err)
 	}
 	if err := os.Rename(tmp, t.filePath); err != nil {
-		t.logger.Error("rename state file", "error", err)
+		return fmt.Errorf("rename state file: %w", err)
 	}
+	return nil
 }
