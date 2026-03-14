@@ -75,11 +75,11 @@ func (r *Router) SelectBackendExcluding(labels []string, exclude map[string]bool
 		if !labelsMatch(b.Labels(), labels) {
 			continue
 		}
+		// Use tracker count for load-balancing across backends, but NOT
+		// as a capacity gate. The provisioner's semaphore is the single
+		// source of truth for capacity — the tracker count can desync
+		// from reality when entries go stale.
 		count := r.tracker.CountByBackend(b.Name())
-		if count >= b.MaxRunners() {
-			r.logger.Debug("backend at capacity", "backend", b.Name(), "count", count, "max", b.MaxRunners())
-			continue
-		}
 		candidates = append(candidates, candidate{b, count})
 	}
 
