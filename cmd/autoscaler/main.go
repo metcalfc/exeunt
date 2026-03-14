@@ -55,7 +55,7 @@ func main() {
 	// Start reconciliation loop
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go reconcileLoop(ctx, tracker, backends, logger)
+	go reconcileLoop(ctx, tracker, backends, provisioner.semaphore, logger)
 
 	// Handle shutdown signals
 	sigCh := make(chan os.Signal, 1)
@@ -121,7 +121,7 @@ func buildBackends(cfg *Config, ssh SSHExecutor, logger *slog.Logger) ([]Backend
 	return backends, nil
 }
 
-func reconcileLoop(ctx context.Context, tracker *Tracker, backends []Backend, logger *slog.Logger) {
+func reconcileLoop(ctx context.Context, tracker *Tracker, backends []Backend, semaphore chan struct{}, logger *slog.Logger) {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 
@@ -130,12 +130,12 @@ func reconcileLoop(ctx context.Context, tracker *Tracker, backends []Backend, lo
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			reconcile(ctx, tracker, backends, logger)
+			reconcile(ctx, tracker, backends, semaphore, logger)
 		}
 	}
 }
 
-func reconcile(ctx context.Context, tracker *Tracker, backends []Backend, logger *slog.Logger) {
+func reconcile(ctx context.Context, tracker *Tracker, backends []Backend, semaphore chan struct{}, logger *slog.Logger) {
 	// Build set of existing runners across all backends.
 	// Track which backends failed so we don't garbage-collect their VMs
 	// when we simply couldn't reach the backend.
@@ -155,17 +155,31 @@ func reconcile(ctx context.Context, tracker *Tracker, backends []Backend, logger
 		}
 	}
 
+	// Snapshot tracked VMs once — used for both forward and reverse passes.
+	activeVMs := tracker.ActiveVMs()
+
 	// Build set of tracked VM names for reverse lookup.
 	tracked := make(map[string]bool)
-	for _, record := range tracker.ActiveVMs() {
+	for _, record := range activeVMs {
 		tracked[record.VMName] = true
+	}
+
+	// releaseAndRemove removes a tracked entry and releases its semaphore slot.
+	// Reconcile bypasses the Provisioner, so it must release the semaphore
+	// directly to avoid deadlocking future provisioning.
+	releaseAndRemove := func(jobID int64) {
+		tracker.Remove(jobID)
+		select {
+		case <-semaphore:
+		default:
+		}
 	}
 
 	// Forward: remove tracker entries for runners that no longer exist,
 	// but skip VMs on backends we couldn't reach.
 	const staleTimeout = 10 * time.Minute
 	now := time.Now().UTC()
-	for _, record := range tracker.ActiveVMs() {
+	for _, record := range activeVMs {
 		if failedBackends[record.Backend] {
 			logger.Debug("reconcile: skipping VM on unreachable backend",
 				"vm", record.VMName, "backend", record.Backend)
@@ -174,7 +188,7 @@ func reconcile(ctx context.Context, tracker *Tracker, backends []Backend, logger
 		if !existing[record.VMName] {
 			logger.Warn("reconcile: runner no longer exists, removing from tracker",
 				"vm", record.VMName, "job_id", record.JobID, "backend", record.Backend)
-			tracker.Remove(record.JobID)
+			releaseAndRemove(record.JobID)
 			continue
 		}
 
@@ -194,7 +208,7 @@ func reconcile(ctx context.Context, tracker *Tracker, backends []Backend, logger
 							"vm", record.VMName, "error", err)
 					}
 				}
-				tracker.Remove(record.JobID)
+				releaseAndRemove(record.JobID)
 			}
 		}
 	}

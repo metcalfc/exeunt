@@ -8,6 +8,16 @@ import (
 	"time"
 )
 
+// testSemaphore creates a buffered semaphore channel for tests.
+// Pre-fill it with n tokens to simulate n provisioned runners.
+func testSemaphore(capacity, used int) chan struct{} {
+	sem := make(chan struct{}, capacity)
+	for i := 0; i < used; i++ {
+		sem <- struct{}{}
+	}
+	return sem
+}
+
 func TestBuildBackends(t *testing.T) {
 	logger := newTestLogger()
 	ssh := &RealSSHExecutor{} // Real executor — won't be called during construction
@@ -130,11 +140,16 @@ func TestReconcileEmptyBackend(t *testing.T) {
 		Name: "ok-backend", Type: "exedev", MaxRunners: 5, Labels: []string{"exe"},
 	}, "test:latest", okSSH, logger)
 
-	reconcile(context.Background(), tracker, []Backend{emptyBackend, okBackend}, logger)
+	sem := testSemaphore(10, 2) // 2 jobs tracked
+	reconcile(context.Background(), tracker, []Backend{emptyBackend, okBackend}, sem, logger)
 
 	// exeunt-abc was on empty-backend which returned no VMs → removed
 	if tracker.HasJob(1) {
 		t.Error("expected job 1 to be removed (VM not found on backend)")
+	}
+	// Semaphore should have released 1 slot (job 1 removed)
+	if len(sem) != 1 {
+		t.Errorf("semaphore len = %d, want 1 (one slot released)", len(sem))
 	}
 	// exeunt-def exists in okBackend's list
 	if !tracker.HasJob(2) {
@@ -161,7 +176,8 @@ func TestReconcileListRunnerError(t *testing.T) {
 		Name: "ok-backend", Type: "exedev", MaxRunners: 5, Labels: []string{"exe"},
 	}, "test:latest", okSSH, logger)
 
-	reconcile(context.Background(), tracker, []Backend{failBackend, okBackend}, logger)
+	sem := testSemaphore(10, 2)
+	reconcile(context.Background(), tracker, []Backend{failBackend, okBackend}, sem, logger)
 
 	// exeunt-abc is on failing-backend whose ListRunners errored.
 	// Reconcile must NOT remove it — we couldn't reach the backend.
@@ -187,7 +203,7 @@ func TestReconcileLoopCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		reconcileLoop(ctx, tracker, []Backend{backend}, logger)
+		reconcileLoop(ctx, tracker, []Backend{backend}, testSemaphore(10, 0), logger)
 		close(done)
 	}()
 
@@ -212,7 +228,7 @@ func TestReconcileEmptyTracker(t *testing.T) {
 	}, "test:latest", ssh, logger)
 
 	// Empty tracker + backends with VMs — reconcile should destroy orphans
-	reconcile(context.Background(), tracker, []Backend{backend}, logger)
+	reconcile(context.Background(), tracker, []Backend{backend}, testSemaphore(10, 0), logger)
 
 	if tracker.Count() != 0 {
 		t.Errorf("count = %d, want 0", tracker.Count())
@@ -253,10 +269,15 @@ func TestReconcileStaleReady(t *testing.T) {
 		Name: "test-backend", Type: "exedev", MaxRunners: 5, Labels: []string{"exe"},
 	}, "test:latest", ssh, logger)
 
-	reconcile(context.Background(), tracker, []Backend{backend}, logger)
+	sem := testSemaphore(10, 2) // 2 jobs tracked
+	reconcile(context.Background(), tracker, []Backend{backend}, sem, logger)
 
 	if tracker.HasJob(1) {
 		t.Error("expected stale job 1 to be removed")
+	}
+	// Semaphore should have released 1 slot (stale job 1 removed)
+	if len(sem) != 1 {
+		t.Errorf("semaphore len = %d, want 1 (one slot released)", len(sem))
 	}
 	if !tracker.HasJob(2) {
 		t.Error("expected fresh job 2 to survive")
