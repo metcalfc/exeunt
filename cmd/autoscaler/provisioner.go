@@ -35,7 +35,7 @@ func NewProvisioner(cfg *Config, tracker *Tracker, router *Router, gh *GitHubCli
 
 func (p *Provisioner) vmName(jobID int64) string {
 	h := sha256.Sum256([]byte(fmt.Sprintf("%d", jobID)))
-	return fmt.Sprintf("exeunt-%x", h[:3])
+	return fmt.Sprintf("exeunt-%x", h[:8])
 }
 
 func (p *Provisioner) Provision(ctx context.Context, event WorkflowJobEvent) {

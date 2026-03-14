@@ -27,9 +27,9 @@ func TestVmName(t *testing.T) {
 		t.Errorf("expected different names for different job IDs, both got %q", name1)
 	}
 
-	// Starts with prefix
-	if len(name1) < 8 || name1[:7] != "exeunt-" {
-		t.Errorf("expected name starting with 'exeunt-', got %q", name1)
+	// Starts with prefix and has 16 hex chars (8 bytes)
+	if len(name1) != 23 || name1[:7] != "exeunt-" {
+		t.Errorf("expected 'exeunt-' + 16 hex chars (23 total), got %q (len %d)", name1, len(name1))
 	}
 }
 
