@@ -30,8 +30,11 @@ type VMListResponse struct {
 type RealSSHExecutor struct{}
 
 func (e *RealSSHExecutor) NewVM(ctx context.Context, name, image string) error {
-	cmd := exec.CommandContext(ctx, "ssh", "-n", "exe.dev",
-		"new", "--name="+name, "--image="+image, "--json", "--no-email")
+	args := []string{"-n", "exe.dev", "new", "--name=" + name, "--json", "--no-email"}
+	if image != "" {
+		args = append(args, "--image="+image)
+	}
+	cmd := exec.CommandContext(ctx, "ssh", args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
