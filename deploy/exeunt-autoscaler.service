@@ -1,0 +1,21 @@
+[Unit]
+Description=Exeunt Autoscaler - GitHub Actions webhook-based runner provisioner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=exedev
+ExecStart=/usr/local/bin/exeunt-autoscaler
+Restart=on-failure
+RestartSec=5
+EnvironmentFile=/etc/exeunt-autoscaler/env
+StateDirectory=exeunt-autoscaler
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/exeunt-autoscaler
+
+[Install]
+WantedBy=multi-user.target
