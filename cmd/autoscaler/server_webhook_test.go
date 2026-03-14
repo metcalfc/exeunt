@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -257,6 +258,49 @@ func TestWebhookMethodRouting(t *testing.T) {
 	if w.Code == http.StatusOK {
 		t.Error("GET /webhook should not return 200")
 	}
+}
+
+// failWriter is an http.ResponseWriter that fails on Write.
+// This is a real ResponseWriter (not a mock) — it exercises the error
+// path in json.Encode when the underlying connection drops.
+type failWriter struct {
+	header http.Header
+	code   int
+}
+
+func (w *failWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (w *failWriter) WriteHeader(code int) { w.code = code }
+
+func (w *failWriter) Write(_ []byte) (int, error) {
+	return 0, fmt.Errorf("connection reset")
+}
+
+func TestHealthzEncodeError(t *testing.T) {
+	mockSSH := &MockSSHExecutor{}
+	server, _ := newTestServer(t, mockSSH)
+
+	req := httptest.NewRequest("GET", "/healthz", nil)
+	w := &failWriter{}
+	server.httpServer.Handler.ServeHTTP(w, req)
+
+	// Should not panic — the error is logged, not propagated
+}
+
+func TestStatusEncodeError(t *testing.T) {
+	mockSSH := &MockSSHExecutor{}
+	server, _ := newTestServer(t, mockSSH)
+
+	req := httptest.NewRequest("GET", "/status", nil)
+	w := &failWriter{}
+	server.httpServer.Handler.ServeHTTP(w, req)
+
+	// Should not panic — the error is logged, not propagated
 }
 
 func TestWebhookBodyTooLarge(t *testing.T) {

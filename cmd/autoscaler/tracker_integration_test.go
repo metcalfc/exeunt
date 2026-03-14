@@ -186,6 +186,48 @@ func TestTrackerSaveFailsGracefully(t *testing.T) {
 	if tr.Count() != 1 {
 		t.Errorf("count = %d, want 1 (in-memory state should work even if save fails)", tr.Count())
 	}
+
+	// Update should also survive a save failure
+	tr.Update(1, StatusRunning)
+	record, ok := tr.Get(1)
+	if !ok {
+		t.Fatal("expected job 1 after update")
+	}
+	if record.Status != StatusRunning {
+		t.Errorf("status = %q, want %q (in-memory update should work)", record.Status, StatusRunning)
+	}
+
+	// Remove should also survive a save failure
+	tr.Remove(1)
+	if tr.Count() != 0 {
+		t.Errorf("count = %d, want 0 (in-memory remove should work)", tr.Count())
+	}
+}
+
+func TestTrackerSaveRenameError(t *testing.T) {
+	// Create a valid state dir, then make the state file a directory
+	// so the rename from .tmp to the final path fails
+	dir := t.TempDir()
+	stateFile := filepath.Join(dir, "state.json")
+
+	logger := newTestLogger()
+	tr := NewTracker(stateFile, logger)
+
+	// First add works (creates state.json)
+	tr.Add(1, "vm-1", "repo", "backend", []string{"exe"})
+	if tr.Count() != 1 {
+		t.Fatalf("count = %d, want 1", tr.Count())
+	}
+
+	// Replace the state file with a directory to cause rename to fail
+	os.Remove(stateFile)
+	os.Mkdir(stateFile, 0o755)
+
+	// Add should still work in-memory even though rename will fail
+	tr.Add(2, "vm-2", "repo", "backend", []string{"exe"})
+	if tr.Count() != 2 {
+		t.Errorf("count = %d, want 2 (in-memory should work despite rename error)", tr.Count())
+	}
 }
 
 func TestTrackerCountByBackendAccuracy(t *testing.T) {
