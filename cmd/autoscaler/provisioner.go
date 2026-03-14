@@ -92,22 +92,31 @@ func (p *Provisioner) provision(ctx context.Context, log *slog.Logger, jobID int
 		return fmt.Errorf("generate JIT config: %w", err)
 	}
 
-	// Start runner on VM
+	// Start runner on VM using systemd-run so the process survives SSH disconnect.
+	// nohup/disown is not enough — systemd logind kills processes in the session scope.
 	log.Info("starting runner")
 	script := fmt.Sprintf(`set -euo pipefail
 JIT_CONFIG="%s"
-cd /home/exedev/actions-runner
-sudo -u exedev nohup ./run.sh --jitconfig "$JIT_CONFIG" > runner.log 2>&1 &
-disown
+RUNNER_DIR=/home/exedev/actions-runner
+RUNNER_LOG="$RUNNER_DIR/runner.log"
+
+systemd-run --unit=actions-runner \
+  --property=User=exedev \
+  --property=Group=exedev \
+  --property=WorkingDirectory="$RUNNER_DIR" \
+  --property=StandardOutput=file:"$RUNNER_LOG" \
+  --property=StandardError=file:"$RUNNER_LOG" \
+  "$RUNNER_DIR/run.sh" --jitconfig "$JIT_CONFIG"
+
 for i in $(seq 1 30); do
-  if grep -q "Listening for Jobs" runner.log 2>/dev/null; then
+  if grep -q "Listening for Jobs" "$RUNNER_LOG" 2>/dev/null; then
     echo "Runner connected"
     exit 0
   fi
   sleep 1
 done
 echo "Runner did not connect within 30s" >&2
-cat runner.log >&2
+cat "$RUNNER_LOG" >&2
 exit 1`, jitConfig)
 
 	if _, err := p.ssh.RunOnVM(ctx, vmName, script); err != nil {
