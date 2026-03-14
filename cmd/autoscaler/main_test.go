@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestBuildBackends(t *testing.T) {
@@ -29,6 +30,9 @@ func TestBuildBackends(t *testing.T) {
 		}
 		if backends[0].Type() != "exedev" {
 			t.Errorf("Type() = %q, want %q", backends[0].Type(), "exedev")
+		}
+		if backends[0].Priority() != 1 {
+			t.Errorf("Priority() = %d, want %d", backends[0].Priority(), 1)
 		}
 	})
 
@@ -139,6 +143,33 @@ func TestReconcileListRunnerError(t *testing.T) {
 	// exeunt-def exists in okBackend's list
 	if !tracker.HasJob(2) {
 		t.Error("expected job 2 to survive (VM exists on ok-backend)")
+	}
+}
+
+func TestReconcileLoopCancellation(t *testing.T) {
+	logger := newTestLogger()
+	dir := t.TempDir()
+	tracker := NewTracker(filepath.Join(dir, "state.json"), logger)
+
+	ssh := &MockSSHExecutor{}
+	backend := NewExeDevBackend(BackendConfig{
+		Name: "test", Type: "exedev", MaxRunners: 5, Labels: []string{"exe"},
+	}, "test:latest", ssh, logger)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		reconcileLoop(ctx, tracker, []Backend{backend}, logger)
+		close(done)
+	}()
+
+	// Cancel immediately — reconcileLoop should exit
+	cancel()
+	select {
+	case <-done:
+		// success
+	case <-time.After(2 * time.Second):
+		t.Fatal("reconcileLoop did not exit after context cancellation")
 	}
 }
 

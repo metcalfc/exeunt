@@ -94,4 +94,12 @@ func TestDockerBackendSSHTarget(t *testing.T) {
 			t.Errorf("sshTarget() = %q, want %q", got, "root@myhost")
 		}
 	})
+
+	t.Run("empty user returns host only", func(t *testing.T) {
+		// Construct directly to bypass NewDockerBackend's default
+		b := &DockerBackend{host: "bare-host"}
+		if got := b.sshTarget(); got != "bare-host" {
+			t.Errorf("sshTarget() = %q, want %q", got, "bare-host")
+		}
+	})
 }
