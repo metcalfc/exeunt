@@ -7,6 +7,8 @@ jobs:
   test:
     name: Run on autoscaler-provisioned VM
     runs-on: [self-hosted, exe]
+    env:
+      PATH: /home/exedev/.local/share/mise/shims:/home/exedev/.local/bin:/usr/local/bin:/usr/bin:/bin
     steps:
       - name: System info
         run: |
