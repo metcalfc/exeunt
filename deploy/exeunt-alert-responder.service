@@ -1,0 +1,10 @@
+[Unit]
+Description=Investigate alert emails with Claude
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/exeunt-alert-responder
+User=exedev
+Environment=HOME=/home/exedev
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=/home/exedev

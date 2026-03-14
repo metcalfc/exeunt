@@ -5,7 +5,7 @@ REMOTE_BIN = /usr/local/bin/$(BINARY)
 SERVICE = exeunt-autoscaler
 CONFIG = $(shell test -f deploy/config.local.json && echo deploy/config.local.json || echo deploy/config.json)
 
-.PHONY: build test test-integration bats lint check deploy deploy-monitor start stop restart status logs clean
+.PHONY: build test test-integration bats lint check deploy deploy-monitor deploy-alert-responder deploy-all start stop restart status logs clean
 
 build:
 	cd $(BUILD_DIR) && GOOS=linux GOARCH=amd64 go build -o ../../$(BINARY) .
@@ -47,6 +47,18 @@ deploy-monitor:
 	ssh $(HOST) 'sudo mv /tmp/exeunt-monitor.timer /etc/systemd/system/exeunt-monitor.timer'
 	ssh $(HOST) 'sudo systemctl daemon-reload && sudo systemctl enable exeunt-monitor.timer && sudo systemctl start exeunt-monitor.timer'
 	ssh $(HOST) 'sudo systemctl list-timers exeunt-monitor.timer --no-pager'
+
+deploy-alert-responder:
+	scp scripts/alert-responder.sh $(HOST):/tmp/exeunt-alert-responder
+	scp deploy/exeunt-alert-responder.service $(HOST):/tmp/exeunt-alert-responder.service
+	scp deploy/exeunt-alert-responder.path $(HOST):/tmp/exeunt-alert-responder.path
+	ssh $(HOST) 'sudo mv /tmp/exeunt-alert-responder /usr/local/bin/exeunt-alert-responder && sudo chmod +x /usr/local/bin/exeunt-alert-responder'
+	ssh $(HOST) 'sudo mv /tmp/exeunt-alert-responder.service /etc/systemd/system/exeunt-alert-responder.service'
+	ssh $(HOST) 'sudo mv /tmp/exeunt-alert-responder.path /etc/systemd/system/exeunt-alert-responder.path'
+	ssh $(HOST) 'sudo systemctl daemon-reload && sudo systemctl enable exeunt-alert-responder.path && sudo systemctl start exeunt-alert-responder.path'
+	ssh $(HOST) 'sudo systemctl status exeunt-alert-responder.path --no-pager'
+
+deploy-all: deploy deploy-monitor deploy-alert-responder
 
 start:
 	ssh $(HOST) sudo systemctl start $(SERVICE)

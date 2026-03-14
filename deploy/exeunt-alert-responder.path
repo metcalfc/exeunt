@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for new alert emails
+
+[Path]
+DirectoryNotEmpty=/home/exedev/Maildir/new
+MakeDirectory=yes
+
+[Install]
+WantedBy=multi-user.target
