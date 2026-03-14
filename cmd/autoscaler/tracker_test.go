@@ -161,3 +161,21 @@ func TestTrackerLoadCorrupt(t *testing.T) {
 		t.Error("expected error loading corrupt state file")
 	}
 }
+
+func TestTrackerCountByBackend(t *testing.T) {
+	tr := newTestTracker(t)
+
+	tr.Add(1, "vm-a", "repo", "backend-a", []string{"exe"})
+	tr.Add(2, "vm-b", "repo", "backend-a", []string{"exe"})
+	tr.Add(3, "vm-c", "repo", "backend-b", []string{"exe"})
+
+	if got := tr.CountByBackend("backend-a"); got != 2 {
+		t.Errorf("CountByBackend(backend-a) = %d, want 2", got)
+	}
+	if got := tr.CountByBackend("backend-b"); got != 1 {
+		t.Errorf("CountByBackend(backend-b) = %d, want 1", got)
+	}
+	if got := tr.CountByBackend("nonexistent"); got != 0 {
+		t.Errorf("CountByBackend(nonexistent) = %d, want 0", got)
+	}
+}

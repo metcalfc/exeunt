@@ -115,3 +115,137 @@ func TestLoadConfigInvalidPort(t *testing.T) {
 		t.Error("expected error for invalid port")
 	}
 }
+
+func TestRepoAllowed(t *testing.T) {
+	cfg := &Config{
+		Repos: []string{"metcalfc/exeunt", "abrihq/*"},
+	}
+
+	tests := []struct {
+		name    string
+		repo    string
+		allowed bool
+	}{
+		{"exact match", "metcalfc/exeunt", true},
+		{"glob match", "abrihq/frontend", true},
+		{"glob match another", "abrihq/backend-api", true},
+		{"no match", "other/repo", false},
+		{"partial match not glob", "metcalfc/other", false},
+		{"empty repo", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := cfg.RepoAllowed(tt.repo); got != tt.allowed {
+				t.Errorf("RepoAllowed(%q) = %v, want %v", tt.repo, got, tt.allowed)
+			}
+		})
+	}
+}
+
+func TestRepoAllowedMultiplePatterns(t *testing.T) {
+	cfg := &Config{
+		Repos: []string{"metcalfc/*", "abrihq/*", "specific/repo"},
+	}
+
+	if !cfg.RepoAllowed("metcalfc/anything") {
+		t.Error("expected metcalfc/* to match")
+	}
+	if !cfg.RepoAllowed("specific/repo") {
+		t.Error("expected exact match for specific/repo")
+	}
+	if cfg.RepoAllowed("unknown/repo") {
+		t.Error("expected no match for unknown/repo")
+	}
+}
+
+func TestLoadConfigFromFile(t *testing.T) {
+	setRequiredEnv(t)
+
+	dir := t.TempDir()
+	configPath := dir + "/config.json"
+
+	configJSON := `{
+		"repos": ["fileorg/filerepo"],
+		"port": 3000,
+		"runner_image": "custom-from-file:v2",
+		"state_file": "/tmp/test-state.json",
+		"log_level": "debug",
+		"backends": [
+			{
+				"name": "file-backend",
+				"type": "exedev",
+				"max_runners": 3,
+				"labels": ["exe", "linux"],
+				"priority": 5
+			}
+		]
+	}`
+	os.WriteFile(configPath, []byte(configJSON), 0o644)
+
+	setEnv(t, "AUTOSCALER_CONFIG", configPath)
+	// Unset AUTOSCALER_REPOS so config file repos are used
+	unsetEnv(t, "AUTOSCALER_REPOS")
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(cfg.Repos) != 1 || cfg.Repos[0] != "fileorg/filerepo" {
+		t.Errorf("repos = %v, want [fileorg/filerepo]", cfg.Repos)
+	}
+	if cfg.Port != 3000 {
+		t.Errorf("port = %d, want 3000", cfg.Port)
+	}
+	if cfg.RunnerImage != "custom-from-file:v2" {
+		t.Errorf("image = %q, want custom-from-file:v2", cfg.RunnerImage)
+	}
+	if cfg.LogLevel != "debug" {
+		t.Errorf("log_level = %q, want debug", cfg.LogLevel)
+	}
+	if len(cfg.Backends) != 1 {
+		t.Fatalf("backends = %d, want 1", len(cfg.Backends))
+	}
+	if cfg.Backends[0].Name != "file-backend" {
+		t.Errorf("backend name = %q, want file-backend", cfg.Backends[0].Name)
+	}
+	if cfg.Backends[0].MaxRunners != 3 {
+		t.Errorf("max_runners = %d, want 3", cfg.Backends[0].MaxRunners)
+	}
+}
+
+func TestLoadConfigReposGlob(t *testing.T) {
+	setRequiredEnv(t)
+
+	dir := t.TempDir()
+	configPath := dir + "/config.json"
+
+	configJSON := `{
+		"repos": ["metcalfc/*", "abrihq/*"]
+	}`
+	os.WriteFile(configPath, []byte(configJSON), 0o644)
+
+	setEnv(t, "AUTOSCALER_CONFIG", configPath)
+	unsetEnv(t, "AUTOSCALER_REPOS")
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(cfg.Repos) != 2 {
+		t.Fatalf("repos = %d, want 2", len(cfg.Repos))
+	}
+
+	// Verify the glob patterns are preserved as-is (used by RepoAllowed)
+	if !cfg.RepoAllowed("metcalfc/anything") {
+		t.Error("expected metcalfc/* to match")
+	}
+	if !cfg.RepoAllowed("abrihq/something") {
+		t.Error("expected abrihq/* to match")
+	}
+	if cfg.RepoAllowed("other/repo") {
+		t.Error("expected other/repo to not match")
+	}
+}

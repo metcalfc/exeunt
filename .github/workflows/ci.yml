@@ -1,0 +1,13 @@
+name: CI
+on:
+  push:
+    branches: [main]
+    paths: [cmd/autoscaler/**]
+  pull_request:
+    paths: [cmd/autoscaler/**]
+jobs:
+  test:
+    runs-on: [self-hosted, exe]
+    steps:
+      - uses: actions/checkout@v5
+      - run: cd cmd/autoscaler && go test -v -count=1 -race ./...
