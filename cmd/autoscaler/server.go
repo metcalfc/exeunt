@@ -132,24 +132,36 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) totalMaxRunners() int {
+	total := 0
+	for _, b := range s.config.Backends {
+		total += b.MaxRunners
+	}
+	return total
+}
+
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	resp := map[string]any{
 		"status":     "ok",
 		"uptime":     time.Since(s.startTime).String(),
 		"active_vms": s.tracker.Count(),
-		"max_vms":    len(s.config.Backends),
+		"max_vms":    s.totalMaxRunners(),
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		s.logger.Error("encode healthz response", "error", err)
+	}
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	resp := map[string]any{
 		"active_vms": s.tracker.ActiveVMs(),
 		"count":      s.tracker.Count(),
-		"max_vms":    len(s.config.Backends),
+		"max_vms":    s.totalMaxRunners(),
 		"uptime":     time.Since(s.startTime).String(),
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		s.logger.Error("encode status response", "error", err)
+	}
 }
