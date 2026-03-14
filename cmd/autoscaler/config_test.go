@@ -215,6 +215,34 @@ func TestLoadConfigFromFile(t *testing.T) {
 	}
 }
 
+func TestLoadConfigInvalidConfigFile(t *testing.T) {
+	setRequiredEnv(t)
+
+	dir := t.TempDir()
+	configPath := dir + "/bad-config.json"
+	os.WriteFile(configPath, []byte("not valid json{{{"), 0o644)
+
+	setEnv(t, "AUTOSCALER_CONFIG", configPath)
+
+	_, err := LoadConfig()
+	if err == nil {
+		t.Error("expected error for invalid JSON config file")
+	}
+}
+
+func TestLoadConfigStateFileOverride(t *testing.T) {
+	setRequiredEnv(t)
+	setEnv(t, "AUTOSCALER_STATE_FILE", "/custom/state.json")
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.StateFile != "/custom/state.json" {
+		t.Errorf("state_file = %q, want /custom/state.json", cfg.StateFile)
+	}
+}
+
 func TestLoadConfigReposGlob(t *testing.T) {
 	setRequiredEnv(t)
 
