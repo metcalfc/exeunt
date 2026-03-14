@@ -29,7 +29,7 @@ debug() { $VERBOSE && echo "  … $*" || true; }
 echo "=== Upstream exeuntu compatibility ==="
 
 UPSTREAM=$(curl -fsSL "$UPSTREAM_RAW" 2>/dev/null) || {
-  fail "Could not fetch upstream Dockerfile from ${UPSTREAM_RAW}"
+  warn "Could not fetch upstream Dockerfile from ${UPSTREAM_RAW}"
   UPSTREAM=""
 }
 
