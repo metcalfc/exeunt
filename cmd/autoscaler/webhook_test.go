@@ -60,6 +60,13 @@ func TestValidateSignature(t *testing.T) {
 			t.Error("expected invalid for bad hex")
 		}
 	})
+
+	t.Run("empty secret", func(t *testing.T) {
+		sig := computeSignature(payload, []byte{})
+		if validateSignature(payload, sig, []byte{}) {
+			t.Error("expected invalid for empty secret")
+		}
+	})
 }
 
 func TestParseWorkflowJobEvent(t *testing.T) {

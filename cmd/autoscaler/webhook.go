@@ -24,6 +24,9 @@ type WorkflowJobEvent struct {
 }
 
 func validateSignature(payload []byte, signature string, secret []byte) bool {
+	if len(secret) == 0 {
+		return false
+	}
 	if !strings.HasPrefix(signature, "sha256=") {
 		return false
 	}
