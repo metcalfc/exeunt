@@ -14,8 +14,7 @@ StateDirectory=exeunt-autoscaler
 
 NoNewPrivileges=true
 ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=/var/lib/exeunt-autoscaler
+ReadWritePaths=/var/lib/exeunt-autoscaler /home/exedev/.config
 
 [Install]
 WantedBy=multi-user.target
