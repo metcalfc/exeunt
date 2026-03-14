@@ -56,39 +56,7 @@ func NewRouter(backends []Backend, tracker *Tracker, logger *slog.Logger) *Route
 // SelectBackend picks the best available backend for the given labels.
 // Returns nil if no backend can handle the job.
 func (r *Router) SelectBackend(labels []string) Backend {
-	type candidate struct {
-		backend Backend
-		count   int
-	}
-
-	var candidates []candidate
-	for _, b := range r.backends {
-		if !labelsMatch(b.Labels(), labels) {
-			continue
-		}
-		count := r.tracker.CountByBackend(b.Name())
-		if count >= b.MaxRunners() {
-			r.logger.Debug("backend at capacity", "backend", b.Name(), "count", count, "max", b.MaxRunners())
-			continue
-		}
-		candidates = append(candidates, candidate{b, count})
-	}
-
-	if len(candidates) == 0 {
-		return nil
-	}
-
-	// Pick by priority (lower wins), then by available capacity
-	best := candidates[0]
-	for _, c := range candidates[1:] {
-		if c.backend.Priority() < best.backend.Priority() {
-			best = c
-		} else if c.backend.Priority() == best.backend.Priority() && c.count < best.count {
-			best = c
-		}
-	}
-
-	return best.backend
+	return r.SelectBackendExcluding(labels, nil)
 }
 
 // SelectBackendExcluding picks the best backend, skipping any in the exclude set.
@@ -109,6 +77,7 @@ func (r *Router) SelectBackendExcluding(labels []string, exclude map[string]bool
 		}
 		count := r.tracker.CountByBackend(b.Name())
 		if count >= b.MaxRunners() {
+			r.logger.Debug("backend at capacity", "backend", b.Name(), "count", count, "max", b.MaxRunners())
 			continue
 		}
 		candidates = append(candidates, candidate{b, count})
@@ -128,6 +97,25 @@ func (r *Router) SelectBackendExcluding(labels []string, exclude map[string]bool
 	}
 
 	return best.backend
+}
+
+// BackendByName returns the backend with the given name, or nil if not found.
+func (r *Router) BackendByName(name string) Backend {
+	for _, b := range r.backends {
+		if b.Name() == name {
+			return b
+		}
+	}
+	return nil
+}
+
+// TotalCapacity returns the sum of MaxRunners across all backends.
+func (r *Router) TotalCapacity() int {
+	total := 0
+	for _, b := range r.backends {
+		total += b.MaxRunners()
+	}
+	return total
 }
 
 // labelsMatch returns true if the backend handles at least one of the job's labels.

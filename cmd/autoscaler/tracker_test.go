@@ -1,7 +1,6 @@
 package main
 
 import (
-	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,7 +10,7 @@ func newTestTracker(t *testing.T) *Tracker {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state.json")
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	logger := newTestLogger()
 	return NewTracker(path, logger)
 }
 
@@ -101,7 +100,7 @@ func TestTrackerActiveVMs(t *testing.T) {
 func TestTrackerPersistence(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state.json")
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	logger := newTestLogger()
 
 	// Write state
 	tr1 := NewTracker(path, logger)
@@ -139,7 +138,7 @@ func TestTrackerPersistence(t *testing.T) {
 func TestTrackerLoadMissing(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "nonexistent.json")
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	logger := newTestLogger()
 
 	tr := NewTracker(path, logger)
 	if err := tr.Load(); err != nil {
@@ -155,7 +154,7 @@ func TestTrackerLoadCorrupt(t *testing.T) {
 	path := filepath.Join(dir, "state.json")
 	os.WriteFile(path, []byte("not json"), 0o644)
 
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	logger := newTestLogger()
 	tr := NewTracker(path, logger)
 	if err := tr.Load(); err == nil {
 		t.Error("expected error loading corrupt state file")

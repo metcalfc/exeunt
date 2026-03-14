@@ -17,12 +17,7 @@ type Provisioner struct {
 }
 
 func NewProvisioner(cfg *Config, tracker *Tracker, router *Router, gh *GitHubClient, logger *slog.Logger) *Provisioner {
-	// Total capacity across all backends
-	totalCap := 0
-	for _, b := range router.backends {
-		totalCap += b.MaxRunners()
-	}
-	sem := make(chan struct{}, totalCap)
+	sem := make(chan struct{}, router.TotalCapacity())
 	return &Provisioner{
 		config:    cfg,
 		tracker:   tracker,
@@ -126,15 +121,7 @@ func (p *Provisioner) Destroy(ctx context.Context, event WorkflowJobEvent) {
 
 	p.tracker.Update(jobID, StatusDestroying)
 
-	// Find the backend that provisioned this runner
-	var backend Backend
-	for _, b := range p.router.backends {
-		if b.Name() == record.Backend {
-			backend = b
-			break
-		}
-	}
-
+	backend := p.router.BackendByName(record.Backend)
 	if backend == nil {
 		log.Error("backend not found for runner", "backend", record.Backend)
 		p.tracker.Remove(jobID)

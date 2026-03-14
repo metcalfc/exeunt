@@ -79,11 +79,14 @@ func (t *Tracker) CountByBackend(backend string) int {
 	return count
 }
 
-func (t *Tracker) Get(jobID int64) (*VMRecord, bool) {
+func (t *Tracker) Get(jobID int64) (VMRecord, bool) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	r, ok := t.vms[jobID]
-	return r, ok
+	if !ok {
+		return VMRecord{}, false
+	}
+	return *r, ok
 }
 
 func (t *Tracker) Update(jobID int64, status VMStatus) {

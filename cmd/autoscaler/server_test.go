@@ -4,10 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -79,7 +77,7 @@ func newTestServer(t *testing.T, mockSSH *MockSSHExecutor) (*Server, *Config) {
 			},
 		},
 	}
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	logger := newTestLogger()
 	tracker := NewTracker(cfg.StateFile, logger)
 
 	backend := NewExeDevBackend(cfg.Backends[0], cfg.RunnerImage, mockSSH, logger)
@@ -342,7 +340,7 @@ func TestReconcile(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	logger := newTestLogger()
 	tracker := NewTracker(filepath.Join(dir, "state.json"), logger)
 
 	tracker.Add(1, "exeunt-exists", "metcalfc/exeunt", "test-exedev", []string{"exe"})
