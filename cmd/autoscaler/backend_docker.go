@@ -56,12 +56,14 @@ func (b *DockerBackend) sshTarget() string {
 }
 
 func (b *DockerBackend) sshRun(ctx context.Context, command string) (string, error) {
-	cmd := exec.CommandContext(ctx, "ssh", "-o", "ConnectTimeout=10", b.sshTarget(), command)
+	// Use tailscale ssh — no SSH keys or known_hosts needed,
+	// auth is handled by WireGuard node identity.
+	cmd := exec.CommandContext(ctx, "tailscale", "ssh", b.sshTarget(), command)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return stdout.String(), fmt.Errorf("ssh %s: %w: %s", b.host, err, stderr.String())
+		return stdout.String(), fmt.Errorf("tailscale ssh %s: %w: %s", b.host, err, stderr.String())
 	}
 	return stdout.String(), nil
 }
