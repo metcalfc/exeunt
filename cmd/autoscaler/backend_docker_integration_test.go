@@ -240,6 +240,118 @@ func TestDockerBackendCreateRunnerDefaultImage(t *testing.T) {
 	}
 }
 
+func TestDockerBackendStartRunner(t *testing.T) {
+	skipWithoutDocker(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	// Build a test image that has a fake run.sh mimicking the runner startup
+	cmd := exec.CommandContext(ctx, "docker", "build", "-t", "exeunt-starttest:latest", "-f", "-", ".")
+	cmd.Stdin = strings.NewReader(`FROM alpine:latest
+RUN adduser -D -h /home/exedev exedev
+RUN mkdir -p /home/exedev/actions-runner
+RUN printf '#!/bin/sh\necho "Starting runner..."\nsleep 1\necho "Listening for Jobs" >> /home/exedev/actions-runner/runner.log\nsleep 3600\n' > /home/exedev/actions-runner/run.sh
+RUN chmod +x /home/exedev/actions-runner/run.sh
+RUN chown -R exedev:exedev /home/exedev/actions-runner
+RUN apk add --no-cache bash grep
+`)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("build start test image: %v\n%s", err, out)
+	}
+
+	shimDir := setupLocalTailscaleShim(t)
+	// Update shim to also skip pull of the start test image
+	shimPath := filepath.Join(shimDir, "tailscale")
+	os.WriteFile(shimPath, []byte(`#!/usr/bin/env bash
+set -euo pipefail
+shift; shift
+cmd="$*"
+cmd="${cmd/docker pull exeunt-test-image:latest && /}"
+cmd="${cmd/docker pull exeunt-starttest:latest && /}"
+bash -c "$cmd"
+`), 0o755)
+
+	backend := NewDockerBackend(BackendConfig{
+		Name: "local-docker", Type: "docker", Host: "localhost",
+		User: "testuser", MaxRunners: 5, Labels: []string{"exe"},
+	}, "exeunt-starttest:latest", newTestLogger())
+	t.Setenv("PATH", shimDir+":"+os.Getenv("PATH"))
+
+	containerName := "exeunt-starttest"
+	cleanupContainer(containerName)
+	defer cleanupContainer(containerName)
+
+	// Create the container
+	if err := backend.CreateRunner(ctx, containerName, "exeunt-starttest:latest"); err != nil {
+		t.Fatalf("CreateRunner: %v", err)
+	}
+
+	// StartRunner should exec run.sh, which writes "Listening for Jobs"
+	// to the log within a few seconds
+	if err := backend.StartRunner(ctx, containerName, "fake-jit-config-base64"); err != nil {
+		t.Fatalf("StartRunner: %v", err)
+	}
+}
+
+func TestDockerBackendStartRunnerTimeout(t *testing.T) {
+	skipWithoutDocker(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	// Build a test image with a run.sh that never writes "Listening for Jobs"
+	cmd := exec.CommandContext(ctx, "docker", "build", "-t", "exeunt-timeouttest:latest", "-f", "-", ".")
+	cmd.Stdin = strings.NewReader(`FROM alpine:latest
+RUN adduser -D -h /home/exedev exedev
+RUN mkdir -p /home/exedev/actions-runner
+RUN printf '#!/bin/sh\necho "Starting but will never listen"\nsleep 3600\n' > /home/exedev/actions-runner/run.sh
+RUN chmod +x /home/exedev/actions-runner/run.sh
+RUN chown -R exedev:exedev /home/exedev/actions-runner
+RUN apk add --no-cache bash grep
+`)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("build timeout test image: %v\n%s", err, out)
+	}
+
+	shimDir := setupLocalTailscaleShim(t)
+	shimPath := filepath.Join(shimDir, "tailscale")
+	os.WriteFile(shimPath, []byte(`#!/usr/bin/env bash
+set -euo pipefail
+shift; shift
+cmd="$*"
+cmd="${cmd/docker pull exeunt-timeouttest:latest && /}"
+# Reduce the wait loop from 30 iterations to 2 for faster test
+cmd="${cmd/seq 1 30/seq 1 2}"
+bash -c "$cmd"
+`), 0o755)
+
+	backend := NewDockerBackend(BackendConfig{
+		Name: "local-docker", Type: "docker", Host: "localhost",
+		User: "testuser", MaxRunners: 5, Labels: []string{"exe"},
+	}, "exeunt-timeouttest:latest", newTestLogger())
+	t.Setenv("PATH", shimDir+":"+os.Getenv("PATH"))
+
+	containerName := "exeunt-timeouttest"
+	cleanupContainer(containerName)
+	defer cleanupContainer(containerName)
+
+	if err := backend.CreateRunner(ctx, containerName, "exeunt-timeouttest:latest"); err != nil {
+		t.Fatalf("CreateRunner: %v", err)
+	}
+
+	// StartRunner should fail because runner never writes "Listening for Jobs"
+	err = backend.StartRunner(ctx, containerName, "fake-jit-config")
+	if err == nil {
+		t.Fatal("expected error when runner never connects")
+	}
+	if !strings.Contains(err.Error(), "runner did not connect") {
+		t.Errorf("error = %q, expected 'runner did not connect'", err)
+	}
+}
+
 func TestDockerBackendSshRunError(t *testing.T) {
 	skipWithoutDocker(t)
 	shimDir := setupLocalTailscaleShim(t)
