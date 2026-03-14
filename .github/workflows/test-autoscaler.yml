@@ -8,7 +8,7 @@ permissions:
 
 jobs:
   test:
-    name: Run on autoscaler-provisioned VM
+    name: Run on autoscaler-provisioned runner
     runs-on: [self-hosted, exe]
     steps:
       - name: Join tailnet
@@ -20,7 +20,7 @@ jobs:
 
       - name: System info
         run: |
-          echo "=== Autoscaler-provisioned VM ==="
+          echo "=== Autoscaler-provisioned runner ==="
           echo "Hostname: $(hostname)"
           echo "OS: $(uname -a)"
           echo "User: $(whoami)"

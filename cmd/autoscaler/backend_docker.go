@@ -73,9 +73,10 @@ func (b *DockerBackend) CreateRunner(ctx context.Context, name, image string) er
 		image = b.image
 	}
 	// Pull latest image, then run container as exedev (non-root).
+	// --device /dev/net/tun + --cap-add net_admin allow Tailscale to run inside the container.
 	// The container starts with a sleep; StartRunner will exec the actual runner.
 	cmd := fmt.Sprintf(
-		"docker pull %s && docker run -d --user exedev --name %s --hostname %s --workdir /home/exedev %s sleep infinity",
+		"docker pull %s && docker run -d --user exedev --name %s --hostname %s --workdir /home/exedev --device /dev/net/tun --cap-add net_admin %s sleep infinity",
 		image, name, name, image,
 	)
 	b.logger.Info("creating docker runner", "host", b.host, "name", name)
