@@ -136,12 +136,16 @@ func reconcileLoop(ctx context.Context, tracker *Tracker, backends []Backend, lo
 }
 
 func reconcile(ctx context.Context, tracker *Tracker, backends []Backend, logger *slog.Logger) {
-	// Build set of existing runners across all backends
+	// Build set of existing runners across all backends.
+	// Track which backends failed so we don't garbage-collect their VMs
+	// when we simply couldn't reach the backend.
 	existing := make(map[string]bool)
+	failedBackends := make(map[string]bool)
 	for _, b := range backends {
 		runners, err := b.ListRunners(ctx)
 		if err != nil {
 			logger.Error("reconcile: list runners", "backend", b.Name(), "error", err)
+			failedBackends[b.Name()] = true
 			continue
 		}
 		for _, name := range runners {
@@ -149,8 +153,14 @@ func reconcile(ctx context.Context, tracker *Tracker, backends []Backend, logger
 		}
 	}
 
-	// Remove tracker entries for runners that no longer exist
+	// Remove tracker entries for runners that no longer exist,
+	// but skip VMs on backends we couldn't reach.
 	for _, record := range tracker.ActiveVMs() {
+		if failedBackends[record.Backend] {
+			logger.Debug("reconcile: skipping VM on unreachable backend",
+				"vm", record.VMName, "backend", record.Backend)
+			continue
+		}
 		if !existing[record.VMName] {
 			logger.Warn("reconcile: runner no longer exists, removing from tracker",
 				"vm", record.VMName, "job_id", record.JobID, "backend", record.Backend)

@@ -8,33 +8,30 @@ SCRIPT="$BATS_TEST_DIRNAME/../scripts/pull-runner-image.sh"
 
 setup() {
   MOCK_BIN="$(mktemp -d)"
+  BATS_STATE="$(mktemp -d)"
   export PATH="$MOCK_BIN:$PATH"
 }
 
 teardown() {
-  rm -rf "$MOCK_BIN"
+  rm -rf "$MOCK_BIN" "$BATS_STATE"
 }
 
 @test "pull-runner-image: reports updated when digest changes" {
-  local call_count=0
-  cat > "$MOCK_BIN/docker" <<'MOCK'
+  cat > "$MOCK_BIN/docker" <<MOCK
 #!/usr/bin/env bash
-if [[ "$1" == "inspect" ]]; then
-  # First call returns old digest, second returns new
-  if [[ -f /tmp/bats-pull-done ]]; then
+if [[ "\$1" == "inspect" ]]; then
+  if [[ -f "$BATS_STATE/pull-done" ]]; then
     echo "img@sha256:newdigest"
   else
     echo "img@sha256:olddigest"
   fi
-elif [[ "$1" == "pull" ]]; then
-  touch /tmp/bats-pull-done
+elif [[ "\$1" == "pull" ]]; then
+  touch "$BATS_STATE/pull-done"
 fi
 MOCK
   chmod +x "$MOCK_BIN/docker"
-  rm -f /tmp/bats-pull-done
 
   run bash "$SCRIPT" testimage:latest
-  rm -f /tmp/bats-pull-done
   [ "$status" -eq 0 ]
   [[ "$output" == *"updated"*"testimage:latest"* ]]
 }
@@ -56,45 +53,39 @@ MOCK
 }
 
 @test "pull-runner-image: uses default image when no arg given" {
-  cat > "$MOCK_BIN/docker" <<'MOCK'
+  cat > "$MOCK_BIN/docker" <<MOCK
 #!/usr/bin/env bash
-if [[ "$1" == "inspect" ]]; then
+if [[ "\$1" == "inspect" ]]; then
   echo "img@sha256:digest"
-elif [[ "$1" == "pull" ]]; then
-  # Capture the last arg (image name, after -q flag)
-  echo "${*: -1}" > /tmp/bats-pulled-image
+elif [[ "\$1" == "pull" ]]; then
+  echo "\${*: -1}" > "$BATS_STATE/pulled-image"
 fi
 MOCK
   chmod +x "$MOCK_BIN/docker"
-  rm -f /tmp/bats-pulled-image
 
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
-  pulled=$(cat /tmp/bats-pulled-image 2>/dev/null)
+  pulled=$(cat "$BATS_STATE/pulled-image" 2>/dev/null)
   [[ "$pulled" == "ghcr.io/metcalfc/exeunt-runner:latest" ]]
-  rm -f /tmp/bats-pulled-image
 }
 
 @test "pull-runner-image: handles missing local image" {
-  cat > "$MOCK_BIN/docker" <<'MOCK'
+  cat > "$MOCK_BIN/docker" <<MOCK
 #!/usr/bin/env bash
-if [[ "$1" == "inspect" ]]; then
-  if [[ -f /tmp/bats-pull-done ]]; then
+if [[ "\$1" == "inspect" ]]; then
+  if [[ -f "$BATS_STATE/pull-done" ]]; then
     echo "img@sha256:freshdigest"
   else
-    # Image not found locally
     echo "Error: No such image" >&2
     exit 1
   fi
-elif [[ "$1" == "pull" ]]; then
-  touch /tmp/bats-pull-done
+elif [[ "\$1" == "pull" ]]; then
+  touch "$BATS_STATE/pull-done"
 fi
 MOCK
   chmod +x "$MOCK_BIN/docker"
-  rm -f /tmp/bats-pull-done
 
   run bash "$SCRIPT" newimage:v1
-  rm -f /tmp/bats-pull-done
   [ "$status" -eq 0 ]
   [[ "$output" == *"updated"*"newimage:v1"* ]]
 }

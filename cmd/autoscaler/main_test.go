@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -110,6 +111,37 @@ func TestBuildBackends(t *testing.T) {
 	})
 }
 
+func TestReconcileEmptyBackend(t *testing.T) {
+	logger := newTestLogger()
+	dir := t.TempDir()
+	tracker := NewTracker(filepath.Join(dir, "state.json"), logger)
+
+	tracker.Add(1, "exeunt-abc", "repo", "empty-backend", []string{"exe"})
+	tracker.Add(2, "exeunt-def", "repo", "ok-backend", []string{"exe"})
+
+	// One backend returns empty list (VM gone), the other has the VM
+	emptySSH := &MockSSHExecutor{} // ListVMs returns empty
+	emptyBackend := NewExeDevBackend(BackendConfig{
+		Name: "empty-backend", Type: "exedev", MaxRunners: 5, Labels: []string{"exe"},
+	}, "test:latest", emptySSH, logger)
+
+	okSSH := &MockSSHExecutor{ListResult: []VMInfo{{VMName: "exeunt-def"}}}
+	okBackend := NewExeDevBackend(BackendConfig{
+		Name: "ok-backend", Type: "exedev", MaxRunners: 5, Labels: []string{"exe"},
+	}, "test:latest", okSSH, logger)
+
+	reconcile(context.Background(), tracker, []Backend{emptyBackend, okBackend}, logger)
+
+	// exeunt-abc was on empty-backend which returned no VMs → removed
+	if tracker.HasJob(1) {
+		t.Error("expected job 1 to be removed (VM not found on backend)")
+	}
+	// exeunt-def exists in okBackend's list
+	if !tracker.HasJob(2) {
+		t.Error("expected job 2 to survive (VM exists on ok-backend)")
+	}
+}
+
 func TestReconcileListRunnerError(t *testing.T) {
 	logger := newTestLogger()
 	dir := t.TempDir()
@@ -118,11 +150,8 @@ func TestReconcileListRunnerError(t *testing.T) {
 	tracker.Add(1, "exeunt-abc", "repo", "failing-backend", []string{"exe"})
 	tracker.Add(2, "exeunt-def", "repo", "ok-backend", []string{"exe"})
 
-	// One backend that fails ListRunners, one that succeeds with an empty list
-	failing := &MockBackend{name: "failing-backend", labels: []string{"exe"}, maxRunners: 5}
-	// Override ListRunners to return error — but MockBackend always returns nil error.
-	// Instead, use an ExeDevBackend with a failing SSH executor.
-	failSSH := &MockSSHExecutor{} // ListVMs returns empty by default
+	// One backend fails ListRunners (SSH error), the other succeeds
+	failSSH := &MockSSHExecutor{ListErr: fmt.Errorf("ssh timeout")}
 	failBackend := NewExeDevBackend(BackendConfig{
 		Name: "failing-backend", Type: "exedev", MaxRunners: 5, Labels: []string{"exe"},
 	}, "test:latest", failSSH, logger)
@@ -132,13 +161,12 @@ func TestReconcileListRunnerError(t *testing.T) {
 		Name: "ok-backend", Type: "exedev", MaxRunners: 5, Labels: []string{"exe"},
 	}, "test:latest", okSSH, logger)
 
-	_ = failing // unused, using real backends instead
 	reconcile(context.Background(), tracker, []Backend{failBackend, okBackend}, logger)
 
-	// exeunt-abc was on failing-backend, but failing-backend's ListRunners returned
-	// empty (no VMs). So reconcile should remove it since the VM doesn't exist.
-	if tracker.HasJob(1) {
-		t.Error("expected job 1 to be removed (VM not found on backend)")
+	// exeunt-abc is on failing-backend whose ListRunners errored.
+	// Reconcile must NOT remove it — we couldn't reach the backend.
+	if !tracker.HasJob(1) {
+		t.Error("expected job 1 to SURVIVE (backend was unreachable, not empty)")
 	}
 	// exeunt-def exists in okBackend's list
 	if !tracker.HasJob(2) {

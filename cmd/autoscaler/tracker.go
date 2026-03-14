@@ -58,7 +58,7 @@ func (t *Tracker) Add(jobID int64, vmName, repo, backend string, labels []string
 		VMName:    vmName,
 		Repo:      repo,
 		Status:    StatusProvisioning,
-		Labels:    labels,
+		Labels:    append([]string(nil), labels...),
 		Backend:   backend,
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
@@ -86,7 +86,9 @@ func (t *Tracker) Get(jobID int64) (VMRecord, bool) {
 	if !ok {
 		return VMRecord{}, false
 	}
-	return *r, ok
+	copy := *r
+	copy.Labels = append([]string(nil), r.Labels...)
+	return copy, ok
 }
 
 func (t *Tracker) Update(jobID int64, status VMStatus) {
@@ -120,7 +122,9 @@ func (t *Tracker) ActiveVMs() []VMRecord {
 	defer t.mu.RUnlock()
 	result := make([]VMRecord, 0, len(t.vms))
 	for _, r := range t.vms {
-		result = append(result, *r)
+		copy := *r
+		copy.Labels = append([]string(nil), r.Labels...)
+		result = append(result, copy)
 	}
 	return result
 }

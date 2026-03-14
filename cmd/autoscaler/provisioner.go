@@ -75,7 +75,9 @@ func (p *Provisioner) Provision(ctx context.Context, event WorkflowJobEvent) {
 
 		if err := p.provision(ctx, bLog, jobID, vmName, repo, event.WorkflowJob.Labels, backend); err != nil {
 			bLog.Error("provisioning failed, trying next backend", "error", err)
-			_ = backend.DestroyRunner(ctx, vmName)
+			if cleanupErr := backend.DestroyRunner(ctx, vmName); cleanupErr != nil {
+				bLog.Warn("cleanup failed, resource may be orphaned", "error", cleanupErr)
+			}
 			p.tracker.Remove(jobID)
 			continue
 		}

@@ -19,6 +19,7 @@ type MockSSHExecutor struct {
 	RemoveCalls []string
 	RunOnCalls  []struct{ Name, Script string }
 	ListResult  []VMInfo
+	ListErr     error
 	NewVMErr    error
 	RemoveErr   error
 	RunOnErr    error
@@ -42,7 +43,7 @@ func (m *MockSSHExecutor) RemoveVM(_ context.Context, name string) error {
 func (m *MockSSHExecutor) ListVMs(_ context.Context) ([]VMInfo, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.ListResult, nil
+	return m.ListResult, m.ListErr
 }
 
 func (m *MockSSHExecutor) WaitForSSH(_ context.Context, _ string) error {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -18,7 +19,7 @@ func TestTrackerConcurrentAccess(t *testing.T) {
 		wg.Add(1)
 		go func(id int64) {
 			defer wg.Done()
-			tr.Add(id, "vm-"+string(rune('a'+id%26)), "repo", "backend", []string{"exe"})
+			tr.Add(id, fmt.Sprintf("vm-%d", id), "repo", "backend", []string{"exe"})
 		}(i)
 	}
 	wg.Wait()
