@@ -8,7 +8,7 @@ on:
 jobs:
   sync:
     name: Sync fork with upstream
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, exe]
     steps:
       - name: Clone fork
         uses: actions/checkout@v5

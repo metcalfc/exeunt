@@ -14,7 +14,7 @@ on:
 jobs:
   reap:
     name: Reap orphaned exeunt-* VMs
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, exe]
     steps:
       - uses: actions/checkout@v5
 

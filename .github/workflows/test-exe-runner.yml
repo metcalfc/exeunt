@@ -6,7 +6,7 @@ on:
 jobs:
   provision:
     name: Provision exe.dev runner
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, exe]
     outputs:
       vm_name: ${{ steps.setup.outputs.vm_name }}
     steps:
@@ -69,7 +69,7 @@ jobs:
 
   teardown:
     name: Teardown exe.dev runner
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, exe]
     needs: [provision, test]
     if: always()
     steps:

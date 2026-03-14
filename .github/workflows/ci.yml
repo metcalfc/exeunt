@@ -13,33 +13,15 @@ jobs:
 
   lint:
     name: Lint
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, exe]
     steps:
       - uses: actions/checkout@v5
-
-      - name: actionlint
-        uses: reviewdog/action-actionlint@v1
-
-      - name: shellcheck
-        run: |
-          sudo apt-get -qq install shellcheck
-          shellcheck scripts/*.sh
+      - run: actionlint
+      - run: shellcheck scripts/*.sh
 
   bats:
     name: Bats tests
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, exe]
     steps:
       - uses: actions/checkout@v5
-
-      - name: Install bats
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -qq -y bats jq
-
-      - name: Install Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: cmd/autoscaler/go.mod
-
-      - name: Run bats tests
-        run: bats tests/
+      - run: bats tests/
