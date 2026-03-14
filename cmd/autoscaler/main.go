@@ -81,7 +81,7 @@ func main() {
 
 	logger.Info("autoscaler started",
 		"port", cfg.Port,
-		"repo", cfg.Repo,
+		"repos", cfg.Repos,
 		"backends", len(backends),
 		"image", cfg.RunnerImage,
 	)

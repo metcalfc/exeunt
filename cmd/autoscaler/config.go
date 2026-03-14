@@ -4,13 +4,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"strconv"
+	"strings"
 )
 
 type Config struct {
 	WebhookSecret string
 	GitHubToken   string
-	Repo          string
+	Repos         []string
 	Port          int
 	RunnerImage   string
 	StateFile     string
@@ -20,12 +22,26 @@ type Config struct {
 
 // ConfigFile is the JSON config file format.
 type ConfigFile struct {
-	Repo        string          `json:"repo"`
+	Repos       []string        `json:"repos"`
 	Port        int             `json:"port"`
 	RunnerImage string          `json:"runner_image"`
 	StateFile   string          `json:"state_file"`
 	LogLevel    string          `json:"log_level"`
 	Backends    []BackendConfig `json:"backends"`
+}
+
+// RepoAllowed checks if a repo matches any configured pattern.
+// Patterns support path.Match glob syntax (e.g., "abrihq/*").
+func (c *Config) RepoAllowed(repo string) bool {
+	for _, pattern := range c.Repos {
+		if pattern == repo {
+			return true
+		}
+		if matched, _ := path.Match(pattern, repo); matched {
+			return true
+		}
+	}
+	return false
 }
 
 func LoadConfig() (*Config, error) {
@@ -58,9 +74,7 @@ func LoadConfig() (*Config, error) {
 		if err := json.Unmarshal(data, &cf); err != nil {
 			return nil, fmt.Errorf("parse config file %s: %w", configPath, err)
 		}
-		if cf.Repo != "" {
-			c.Repo = cf.Repo
-		}
+		c.Repos = cf.Repos
 		if cf.Port != 0 {
 			c.Port = cf.Port
 		}
@@ -77,11 +91,11 @@ func LoadConfig() (*Config, error) {
 	}
 
 	// Env vars override config file
-	if v := os.Getenv("AUTOSCALER_REPO"); v != "" {
-		c.Repo = v
+	if v := os.Getenv("AUTOSCALER_REPOS"); v != "" {
+		c.Repos = strings.Split(v, ",")
 	}
-	if c.Repo == "" {
-		return nil, fmt.Errorf("AUTOSCALER_REPO is required (env or config file)")
+	if len(c.Repos) == 0 {
+		return nil, fmt.Errorf("repos is required (AUTOSCALER_REPOS env or repos in config file)")
 	}
 
 	if v := os.Getenv("AUTOSCALER_PORT"); v != "" {

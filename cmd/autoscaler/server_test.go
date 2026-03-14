@@ -64,7 +64,7 @@ func newTestServer(t *testing.T, mockSSH *MockSSHExecutor) (*Server, *Config) {
 	cfg := &Config{
 		WebhookSecret: "test-secret",
 		GitHubToken:   "ghp_test",
-		Repo:          "metcalfc/exeunt",
+		Repos:         []string{"metcalfc/exeunt"},
 		Port:          0,
 		RunnerImage:   "ghcr.io/metcalfc/exeunt-runner:latest",
 		StateFile:     filepath.Join(dir, "state.json"),

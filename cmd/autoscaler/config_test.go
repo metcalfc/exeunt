@@ -33,7 +33,7 @@ func setRequiredEnv(t *testing.T) {
 	t.Helper()
 	setEnv(t, "AUTOSCALER_WEBHOOK_SECRET", "test-secret")
 	setEnv(t, "AUTOSCALER_GITHUB_TOKEN", "ghp_test")
-	setEnv(t, "AUTOSCALER_REPO", "metcalfc/exeunt")
+	setEnv(t, "AUTOSCALER_REPOS", "metcalfc/exeunt")
 	// Point to nonexistent config file so it uses defaults
 	setEnv(t, "AUTOSCALER_CONFIG", "/tmp/nonexistent-autoscaler-config.json")
 }
@@ -90,7 +90,7 @@ func TestLoadConfigMissingRequired(t *testing.T) {
 	}{
 		{"missing webhook secret", "AUTOSCALER_WEBHOOK_SECRET"},
 		{"missing github token", "AUTOSCALER_GITHUB_TOKEN"},
-		{"missing repo", "AUTOSCALER_REPO"},
+		{"missing repos", "AUTOSCALER_REPOS"},
 	}
 
 	for _, tt := range tests {

@@ -84,7 +84,14 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log := s.logger.With("action", event.Action, "job_id", event.WorkflowJob.ID,
-		"labels", event.WorkflowJob.Labels)
+		"repo", event.Repository.FullName, "labels", event.WorkflowJob.Labels)
+
+	// Check if repo is allowed
+	if !s.config.RepoAllowed(event.Repository.FullName) {
+		log.Debug("repo not in allowed list, ignoring")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 
 	switch event.Action {
 	case "queued":

@@ -1,5 +1,5 @@
 {
-  "repo": "metcalfc/exeunt",
+  "repos": [],
   "port": 8080,
   "runner_image": "ghcr.io/metcalfc/exeunt-runner:latest",
   "state_file": "/var/lib/exeunt-autoscaler/state.json",
