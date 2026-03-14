@@ -3,7 +3,14 @@ package main
 import (
 	"context"
 	"log/slog"
+	"strings"
 )
+
+// shellQuote wraps a value in single quotes with proper escaping,
+// preventing shell injection when interpolating into shell commands.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
 
 // Backend provisions and destroys runners on a specific infrastructure.
 type Backend interface {

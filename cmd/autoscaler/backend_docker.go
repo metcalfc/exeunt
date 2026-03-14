@@ -87,10 +87,12 @@ func (b *DockerBackend) CreateRunner(ctx context.Context, name, image string) er
 }
 
 func (b *DockerBackend) StartRunner(ctx context.Context, name, jitConfig string) error {
-	// Exec the runner inside the already-running container (already running as exedev).
+	// Pass JIT config via docker -e to avoid shell interpolation.
+	// shellQuote protects the value from the remote shell; docker -e
+	// sets it in the container where bash -c expands $JIT_CONFIG.
 	script := fmt.Sprintf(
-		`docker exec -d %s bash -c 'cd /home/exedev/actions-runner && ./run.sh --jitconfig "%s" > /home/exedev/actions-runner/runner.log 2>&1'`,
-		name, jitConfig,
+		`docker exec -e JIT_CONFIG=%s -d %s bash -c "cd /home/exedev/actions-runner && ./run.sh --jitconfig \"\$JIT_CONFIG\" > /home/exedev/actions-runner/runner.log 2>&1"`,
+		shellQuote(jitConfig), name,
 	)
 	b.logger.Info("starting runner in container", "host", b.host, "name", name)
 	if _, err := b.sshRun(ctx, script); err != nil {

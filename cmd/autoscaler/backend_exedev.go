@@ -52,7 +52,7 @@ func (b *ExeDevBackend) CreateRunner(ctx context.Context, name, _ string) error 
 
 func (b *ExeDevBackend) StartRunner(ctx context.Context, name, jitConfig string) error {
 	script := fmt.Sprintf(`set -euo pipefail
-JIT_CONFIG="%s"
+JIT_CONFIG=%s
 RUNNER_DIR=/home/exedev/actions-runner
 RUNNER_LOG="$RUNNER_DIR/runner.log"
 
@@ -73,7 +73,7 @@ for i in $(seq 1 30); do
 done
 echo "Runner did not connect within 30s" >&2
 cat "$RUNNER_LOG" >&2
-exit 1`, jitConfig)
+exit 1`, shellQuote(jitConfig))
 
 	b.logger.Info("starting runner on VM", "name", name)
 	if _, err := b.ssh.RunOnVM(ctx, name, script); err != nil {
