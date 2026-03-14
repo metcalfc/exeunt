@@ -53,6 +53,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
+	// Limit request body to 1MB to prevent OOM from oversized payloads.
+	// GitHub webhook payloads are typically well under this limit.
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		s.logger.Error("read webhook body", "error", err)
