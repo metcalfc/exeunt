@@ -1,0 +1,8 @@
+[Unit]
+Description=Exeunt infrastructure monitor
+After=exeunt-autoscaler.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/exeunt-monitor
+User=root
