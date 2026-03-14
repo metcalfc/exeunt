@@ -143,11 +143,11 @@ func (p *Provisioner) Destroy(ctx context.Context, event WorkflowJobEvent) {
 	}
 
 	if err := backend.DestroyRunner(ctx, vmName); err != nil {
-		log.Error("failed to destroy runner", "error", err)
-		return
+		log.Error("failed to destroy runner, cleaning up tracker", "error", err)
+	} else {
+		log.Info("runner destroyed")
 	}
 
 	p.tracker.Remove(jobID)
 	<-p.semaphore
-	log.Info("runner destroyed")
 }

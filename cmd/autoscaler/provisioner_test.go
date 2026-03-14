@@ -174,6 +174,39 @@ func TestDestroySuccess(t *testing.T) {
 	}
 }
 
+func TestDestroyFailureReleasesResources(t *testing.T) {
+	backend := &MockBackend{
+		name:       "test",
+		labels:     []string{"exe"},
+		priority:   1,
+		maxRunners: 5,
+		DestroyErr: fmt.Errorf("ssh timeout"),
+	}
+	p, tracker := newProvisionerWithMocks(t, backend)
+
+	tracker.Add(600, "exeunt-fail", "metcalfc/exeunt", "test", []string{"exe"})
+	p.semaphore <- struct{}{} // simulate acquired semaphore
+
+	event := WorkflowJobEvent{Action: "completed"}
+	event.WorkflowJob.ID = 600
+	event.Repository.FullName = "metcalfc/exeunt"
+
+	p.Destroy(context.Background(), event)
+
+	// Even though destroy failed, tracker and semaphore must be cleaned up
+	if tracker.HasJob(600) {
+		t.Error("expected job 600 to be removed from tracker even on destroy failure")
+	}
+
+	// Verify semaphore was released by checking we can acquire it
+	select {
+	case p.semaphore <- struct{}{}:
+		<-p.semaphore // put it back
+	default:
+		t.Error("semaphore was not released after destroy failure")
+	}
+}
+
 func TestDestroyBackendNotFound(t *testing.T) {
 	// Backend in tracker doesn't exist in router
 	backend := &MockBackend{name: "other", labels: []string{"exe"}, priority: 1, maxRunners: 5}
