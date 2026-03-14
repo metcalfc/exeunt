@@ -100,17 +100,18 @@ func TestSelectBackend(t *testing.T) {
 		}
 	})
 
-	t.Run("at capacity", func(t *testing.T) {
+	t.Run("at capacity still returns backend", func(t *testing.T) {
+		// The router no longer rejects backends at capacity — the
+		// provisioner's semaphore is the single capacity gate.
 		full := &MockBackend{name: "full", labels: []string{"exe"}, priority: 1, maxRunners: 1}
 		r := NewRouter([]Backend{full}, tracker, logger)
 
-		// Fill the backend to capacity
 		tracker.Add(999, "vm-full", "repo", "full", []string{"exe"})
 		defer tracker.Remove(999)
 
 		b := r.SelectBackend([]string{"exe"})
-		if b != nil {
-			t.Errorf("expected nil when at capacity, got %q", b.Name())
+		if b == nil {
+			t.Error("expected backend even at capacity (semaphore gates, not router)")
 		}
 	})
 }
