@@ -14,8 +14,8 @@ jobs:
       - name: Join tailnet
         uses: tailscale/github-action@v4
         with:
-          oauth-client-id: TDJJYqwdU491CNTRL-ktbmRWiZMT11CNTRL
-          audience: api.tailscale.com/TDJJYqwdU491CNTRL-ktbmRWiZMT11CNTRL
+          oauth-client-id: TDJJYqwdU491CNTRL-kipyn1okja11CNTRL
+          audience: api.tailscale.com/TDJJYqwdU491CNTRL-kipyn1okja11CNTRL
           tags: tag:exedev
 
       - name: System info
