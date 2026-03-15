@@ -6,14 +6,14 @@ on:
 jobs:
   go-test:
     name: Go tests
-    runs-on: [self-hosted, exe]
+    runs-on: exe
     steps:
       - uses: actions/checkout@v5
       - run: cd cmd/autoscaler && go test -short -v -count=1 -race ./...
 
   lint:
     name: Lint
-    runs-on: [self-hosted, exe]
+    runs-on: exe
     steps:
       - uses: actions/checkout@v5
       - run: actionlint
@@ -21,7 +21,7 @@ jobs:
 
   bats:
     name: Bats tests
-    runs-on: [self-hosted, exe]
+    runs-on: exe
     steps:
       - uses: actions/checkout@v5
       - run: bats tests/
