@@ -29,13 +29,28 @@ func unsetEnv(t *testing.T, key string) {
 	})
 }
 
+func writeTestConfig(t *testing.T, json string) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := dir + "/config.json"
+	os.WriteFile(path, []byte(json), 0o644)
+	setEnv(t, "AUTOSCALER_CONFIG", path)
+	return path
+}
+
+const minimalConfig = `{
+	"scale_sets": [
+		{"registration_url": "https://github.com/test/repo", "name": "exe"}
+	],
+	"backends": [
+		{"name": "test", "type": "docker", "host": "testhost", "max_runners": 2, "labels": ["exe"]}
+	]
+}`
+
 func setRequiredEnv(t *testing.T) {
 	t.Helper()
 	setEnv(t, "AUTOSCALER_GITHUB_TOKEN", "ghp_test")
-	setEnv(t, "AUTOSCALER_REGISTRATION_URL", "https://github.com/metcalfc")
-	setEnv(t, "AUTOSCALER_SCALE_SET_NAME", "exe")
-	// Point to nonexistent config file so it uses defaults
-	setEnv(t, "AUTOSCALER_CONFIG", "/tmp/nonexistent-autoscaler-config.json")
+	writeTestConfig(t, minimalConfig)
 }
 
 func TestLoadConfigDefaults(t *testing.T) {
@@ -55,15 +70,15 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.LogLevel != "info" {
 		t.Errorf("log_level = %q, want info", cfg.LogLevel)
 	}
-	if cfg.ScaleSetName != "exe" {
-		t.Errorf("scale_set_name = %q, want exe", cfg.ScaleSetName)
+	if len(cfg.ScaleSets) != 1 {
+		t.Fatalf("scale_sets = %d, want 1", len(cfg.ScaleSets))
 	}
-	if cfg.RegistrationURL != "https://github.com/metcalfc" {
-		t.Errorf("registration_url = %q, want https://github.com/metcalfc", cfg.RegistrationURL)
+	if cfg.ScaleSets[0].Name != "exe" {
+		t.Errorf("scale_set name = %q, want exe", cfg.ScaleSets[0].Name)
 	}
-	// Default labels = scale set name
-	if len(cfg.ScaleSetLabels) != 1 || cfg.ScaleSetLabels[0] != "exe" {
-		t.Errorf("labels = %v, want [exe]", cfg.ScaleSetLabels)
+	// Default label = scale set name
+	if len(cfg.ScaleSets[0].Labels) != 1 || cfg.ScaleSets[0].Labels[0] != "exe" {
+		t.Errorf("labels = %v, want [exe]", cfg.ScaleSets[0].Labels)
 	}
 }
 
@@ -72,7 +87,6 @@ func TestLoadConfigOverrides(t *testing.T) {
 	setEnv(t, "AUTOSCALER_PORT", "9090")
 	setEnv(t, "AUTOSCALER_RUNNER_IMAGE", "custom:latest")
 	setEnv(t, "AUTOSCALER_LOG_LEVEL", "debug")
-	setEnv(t, "AUTOSCALER_SCALE_SET_LABELS", "exe,exe-gpu")
 
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -85,34 +99,27 @@ func TestLoadConfigOverrides(t *testing.T) {
 	if cfg.RunnerImage != "custom:latest" {
 		t.Errorf("image = %q, want custom:latest", cfg.RunnerImage)
 	}
-	if len(cfg.ScaleSetLabels) != 2 {
-		t.Fatalf("labels = %v, want 2", cfg.ScaleSetLabels)
-	}
-	if cfg.ScaleSetLabels[0] != "exe" || cfg.ScaleSetLabels[1] != "exe-gpu" {
-		t.Errorf("labels = %v, want [exe exe-gpu]", cfg.ScaleSetLabels)
+}
+
+func TestLoadConfigMissingToken(t *testing.T) {
+	setRequiredEnv(t)
+	unsetEnv(t, "AUTOSCALER_GITHUB_TOKEN")
+
+	_, err := LoadConfig()
+	if err == nil {
+		t.Error("expected error when token is missing")
 	}
 }
 
-func TestLoadConfigMissingRequired(t *testing.T) {
-	tests := []struct {
-		name  string
-		unset string
-	}{
-		{"missing github token", "AUTOSCALER_GITHUB_TOKEN"},
-		{"missing registration url", "AUTOSCALER_REGISTRATION_URL"},
-		{"missing scale set name", "AUTOSCALER_SCALE_SET_NAME"},
-	}
+func TestLoadConfigMissingScaleSets(t *testing.T) {
+	setEnv(t, "AUTOSCALER_GITHUB_TOKEN", "ghp_test")
+	writeTestConfig(t, `{
+		"backends": [{"name": "b", "type": "docker", "host": "h", "max_runners": 1, "labels": ["exe"]}]
+	}`)
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			setRequiredEnv(t)
-			unsetEnv(t, tt.unset)
-
-			_, err := LoadConfig()
-			if err == nil {
-				t.Errorf("expected error when %s is missing", tt.unset)
-			}
-		})
+	_, err := LoadConfig()
+	if err == nil {
+		t.Error("expected error when scale_sets is empty")
 	}
 }
 
@@ -126,72 +133,56 @@ func TestLoadConfigInvalidPort(t *testing.T) {
 	}
 }
 
-func TestLoadConfigFromFile(t *testing.T) {
-	setRequiredEnv(t)
-
-	dir := t.TempDir()
-	configPath := dir + "/config.json"
-
-	configJSON := `{
-		"registration_url": "https://github.com/testorg",
-		"scale_set_name": "test-set",
-		"scale_set_labels": ["exe", "linux"],
-		"port": 3000,
-		"runner_image": "custom-from-file:v2",
-		"log_level": "debug",
+func TestLoadConfigMultipleScaleSets(t *testing.T) {
+	setEnv(t, "AUTOSCALER_GITHUB_TOKEN", "ghp_test")
+	writeTestConfig(t, `{
+		"scale_sets": [
+			{"registration_url": "https://github.com/org1/repo1", "name": "exe", "labels": ["exe", "exe-gpu"]},
+			{"registration_url": "https://github.com/org2/repo2", "name": "exe", "labels": ["exe"]}
+		],
 		"backends": [
-			{
-				"name": "file-backend",
-				"type": "exedev",
-				"max_runners": 3,
-				"labels": ["exe", "linux"],
-				"priority": 5
-			}
+			{"name": "b", "type": "docker", "host": "h", "max_runners": 6, "labels": ["exe"]}
 		]
-	}`
-	os.WriteFile(configPath, []byte(configJSON), 0o644)
-
-	setEnv(t, "AUTOSCALER_CONFIG", configPath)
-	// Unset env overrides so config file values are used
-	unsetEnv(t, "AUTOSCALER_REGISTRATION_URL")
-	unsetEnv(t, "AUTOSCALER_SCALE_SET_NAME")
+	}`)
 
 	cfg, err := LoadConfig()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if cfg.RegistrationURL != "https://github.com/testorg" {
-		t.Errorf("registration_url = %q, want https://github.com/testorg", cfg.RegistrationURL)
+	if len(cfg.ScaleSets) != 2 {
+		t.Fatalf("scale_sets = %d, want 2", len(cfg.ScaleSets))
 	}
-	if cfg.ScaleSetName != "test-set" {
-		t.Errorf("scale_set_name = %q, want test-set", cfg.ScaleSetName)
+	if cfg.ScaleSets[0].RegistrationURL != "https://github.com/org1/repo1" {
+		t.Errorf("url = %q", cfg.ScaleSets[0].RegistrationURL)
 	}
-	if cfg.Port != 3000 {
-		t.Errorf("port = %d, want 3000", cfg.Port)
-	}
-	if cfg.RunnerImage != "custom-from-file:v2" {
-		t.Errorf("image = %q, want custom-from-file:v2", cfg.RunnerImage)
-	}
-	if len(cfg.Backends) != 1 {
-		t.Fatalf("backends = %d, want 1", len(cfg.Backends))
-	}
-	if cfg.Backends[0].Name != "file-backend" {
-		t.Errorf("backend name = %q, want file-backend", cfg.Backends[0].Name)
+	if len(cfg.ScaleSets[0].Labels) != 2 {
+		t.Errorf("labels = %v, want 2", cfg.ScaleSets[0].Labels)
 	}
 }
 
-func TestLoadConfigInvalidConfigFile(t *testing.T) {
-	setRequiredEnv(t)
+func TestLoadConfigScaleSetValidation(t *testing.T) {
+	setEnv(t, "AUTOSCALER_GITHUB_TOKEN", "ghp_test")
 
-	dir := t.TempDir()
-	configPath := dir + "/bad-config.json"
-	os.WriteFile(configPath, []byte("not valid json{{{"), 0o644)
+	t.Run("missing registration_url", func(t *testing.T) {
+		writeTestConfig(t, `{
+			"scale_sets": [{"name": "exe"}],
+			"backends": [{"name": "b", "type": "docker", "host": "h", "max_runners": 1, "labels": ["exe"]}]
+		}`)
+		_, err := LoadConfig()
+		if err == nil {
+			t.Error("expected error")
+		}
+	})
 
-	setEnv(t, "AUTOSCALER_CONFIG", configPath)
-
-	_, err := LoadConfig()
-	if err == nil {
-		t.Error("expected error for invalid JSON config file")
-	}
+	t.Run("missing name", func(t *testing.T) {
+		writeTestConfig(t, `{
+			"scale_sets": [{"registration_url": "https://github.com/o/r"}],
+			"backends": [{"name": "b", "type": "docker", "host": "h", "max_runners": 1, "labels": ["exe"]}]
+		}`)
+		_, err := LoadConfig()
+		if err == nil {
+			t.Error("expected error")
+		}
+	})
 }
