@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"log/slog"
 	"strings"
 )
 
@@ -36,96 +35,4 @@ type BackendConfig struct {
 	Labels     []string `json:"labels"`
 	Priority   int      `json:"priority"` // lower = preferred
 	Image      string   `json:"image"`    // override default runner image
-}
-
-// Router selects the best backend for a given set of job labels.
-type Router struct {
-	backends []Backend
-	tracker  *Tracker
-	logger   *slog.Logger
-}
-
-func NewRouter(backends []Backend, tracker *Tracker, logger *slog.Logger) *Router {
-	return &Router{
-		backends: backends,
-		tracker:  tracker,
-		logger:   logger,
-	}
-}
-
-// SelectBackend picks the best available backend for the given labels.
-// Returns nil if no backend can handle the job.
-func (r *Router) SelectBackend(labels []string) Backend {
-	return r.SelectBackendExcluding(labels, nil)
-}
-
-// SelectBackendExcluding picks the best backend, skipping any in the exclude set.
-// Used for fallback when a backend fails during provisioning.
-func (r *Router) SelectBackendExcluding(labels []string, exclude map[string]bool) Backend {
-	type candidate struct {
-		backend Backend
-		count   int
-	}
-
-	var candidates []candidate
-	for _, b := range r.backends {
-		if exclude[b.Name()] {
-			continue
-		}
-		if !labelsMatch(b.Labels(), labels) {
-			continue
-		}
-		// Use tracker count for load-balancing across backends, but NOT
-		// as a capacity gate. The provisioner's semaphore is the single
-		// source of truth for capacity — the tracker count can desync
-		// from reality when entries go stale.
-		count := r.tracker.CountByBackend(b.Name())
-		candidates = append(candidates, candidate{b, count})
-	}
-
-	if len(candidates) == 0 {
-		return nil
-	}
-
-	best := candidates[0]
-	for _, c := range candidates[1:] {
-		if c.backend.Priority() < best.backend.Priority() {
-			best = c
-		} else if c.backend.Priority() == best.backend.Priority() && c.count < best.count {
-			best = c
-		}
-	}
-
-	return best.backend
-}
-
-// BackendByName returns the backend with the given name, or nil if not found.
-func (r *Router) BackendByName(name string) Backend {
-	for _, b := range r.backends {
-		if b.Name() == name {
-			return b
-		}
-	}
-	return nil
-}
-
-// TotalCapacity returns the sum of MaxRunners across all backends.
-func (r *Router) TotalCapacity() int {
-	total := 0
-	for _, b := range r.backends {
-		total += b.MaxRunners()
-	}
-	return total
-}
-
-// labelsMatch returns true if the backend handles at least one of the job's labels.
-func labelsMatch(backendLabels, jobLabels []string) bool {
-	for _, bl := range backendLabels {
-		for _, jl := range jobLabels {
-			if bl == jl {
-				return true
-			}
-		}
-	}
-	return false
 }
