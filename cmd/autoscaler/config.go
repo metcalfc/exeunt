@@ -4,60 +4,40 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path"
 	"strconv"
 	"strings"
 )
 
 type Config struct {
-	WebhookSecret string
-	GitHubToken   string
-	Repos         []string
-	Port          int
-	RunnerImage   string
-	StateFile     string
-	LogLevel      string
-	Backends      []BackendConfig
+	GitHubToken     string
+	RegistrationURL string // e.g., https://github.com/org or https://github.com/org/repo
+	ScaleSetName    string
+	ScaleSetLabels  []string
+	Port            int
+	RunnerImage     string
+	LogLevel        string
+	Backends        []BackendConfig
 }
 
 // ConfigFile is the JSON config file format.
 type ConfigFile struct {
-	Repos       []string        `json:"repos"`
-	Port        int             `json:"port"`
-	RunnerImage string          `json:"runner_image"`
-	StateFile   string          `json:"state_file"`
-	LogLevel    string          `json:"log_level"`
-	Backends    []BackendConfig `json:"backends"`
-}
-
-// RepoAllowed checks if a repo matches any configured pattern.
-// Patterns support path.Match glob syntax (e.g., "abrihq/*").
-func (c *Config) RepoAllowed(repo string) bool {
-	for _, pattern := range c.Repos {
-		if pattern == repo {
-			return true
-		}
-		if matched, _ := path.Match(pattern, repo); matched {
-			return true
-		}
-	}
-	return false
+	RegistrationURL string          `json:"registration_url"`
+	ScaleSetName    string          `json:"scale_set_name"`
+	ScaleSetLabels  []string        `json:"scale_set_labels"`
+	Port            int             `json:"port"`
+	RunnerImage     string          `json:"runner_image"`
+	LogLevel        string          `json:"log_level"`
+	Backends        []BackendConfig `json:"backends"`
 }
 
 func LoadConfig() (*Config, error) {
 	c := &Config{
 		Port:        8080,
 		RunnerImage: "ghcr.io/metcalfc/exeunt-runner:latest",
-		StateFile:   "/var/lib/exeunt-autoscaler/state.json",
 		LogLevel:    "info",
 	}
 
-	// Secrets always from env
-	c.WebhookSecret = os.Getenv("AUTOSCALER_WEBHOOK_SECRET")
-	if c.WebhookSecret == "" {
-		return nil, fmt.Errorf("AUTOSCALER_WEBHOOK_SECRET is required")
-	}
-
+	// Token always from env
 	c.GitHubToken = os.Getenv("AUTOSCALER_GITHUB_TOKEN")
 	if c.GitHubToken == "" {
 		return nil, fmt.Errorf("AUTOSCALER_GITHUB_TOKEN is required")
@@ -74,15 +54,14 @@ func LoadConfig() (*Config, error) {
 		if err := json.Unmarshal(data, &cf); err != nil {
 			return nil, fmt.Errorf("parse config file %s: %w", configPath, err)
 		}
-		c.Repos = cf.Repos
+		c.RegistrationURL = cf.RegistrationURL
+		c.ScaleSetName = cf.ScaleSetName
+		c.ScaleSetLabels = cf.ScaleSetLabels
 		if cf.Port != 0 {
 			c.Port = cf.Port
 		}
 		if cf.RunnerImage != "" {
 			c.RunnerImage = cf.RunnerImage
-		}
-		if cf.StateFile != "" {
-			c.StateFile = cf.StateFile
 		}
 		if cf.LogLevel != "" {
 			c.LogLevel = cf.LogLevel
@@ -91,11 +70,26 @@ func LoadConfig() (*Config, error) {
 	}
 
 	// Env vars override config file
-	if v := os.Getenv("AUTOSCALER_REPOS"); v != "" {
-		c.Repos = strings.Split(v, ",")
+	if v := os.Getenv("AUTOSCALER_REGISTRATION_URL"); v != "" {
+		c.RegistrationURL = v
 	}
-	if len(c.Repos) == 0 {
-		return nil, fmt.Errorf("repos is required (AUTOSCALER_REPOS env or repos in config file)")
+	if c.RegistrationURL == "" {
+		return nil, fmt.Errorf("registration_url is required (AUTOSCALER_REGISTRATION_URL env or registration_url in config file)")
+	}
+
+	if v := os.Getenv("AUTOSCALER_SCALE_SET_NAME"); v != "" {
+		c.ScaleSetName = v
+	}
+	if c.ScaleSetName == "" {
+		return nil, fmt.Errorf("scale_set_name is required (AUTOSCALER_SCALE_SET_NAME env or scale_set_name in config file)")
+	}
+
+	if v := os.Getenv("AUTOSCALER_SCALE_SET_LABELS"); v != "" {
+		c.ScaleSetLabels = strings.Split(v, ",")
+	}
+	if len(c.ScaleSetLabels) == 0 {
+		// Default label is the scale set name
+		c.ScaleSetLabels = []string{c.ScaleSetName}
 	}
 
 	if v := os.Getenv("AUTOSCALER_PORT"); v != "" {
@@ -108,10 +102,6 @@ func LoadConfig() (*Config, error) {
 
 	if v := os.Getenv("AUTOSCALER_RUNNER_IMAGE"); v != "" {
 		c.RunnerImage = v
-	}
-
-	if v := os.Getenv("AUTOSCALER_STATE_FILE"); v != "" {
-		c.StateFile = v
 	}
 
 	if v := os.Getenv("AUTOSCALER_LOG_LEVEL"); v != "" {

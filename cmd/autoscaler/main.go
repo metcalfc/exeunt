@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -10,6 +11,9 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/actions/scaleset"
+	"github.com/actions/scaleset/listener"
 )
 
 func main() {
@@ -33,12 +37,6 @@ func main() {
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
 
-	tracker := NewTracker(cfg.StateFile, logger)
-	if err := tracker.Load(); err != nil {
-		logger.Error("load state", "error", err)
-		os.Exit(1)
-	}
-
 	// Build backends from config
 	ssh := &RealSSHExecutor{}
 	backends, err := buildBackends(cfg, ssh, logger)
@@ -47,57 +45,167 @@ func main() {
 		os.Exit(1)
 	}
 
-	router := NewRouter(backends, tracker, logger)
-	gh := NewGitHubClient(cfg.GitHubToken)
-	provisioner := NewProvisioner(cfg, tracker, router, gh, logger)
-	server := NewServer(cfg, provisioner, tracker, logger)
+	// Use the first backend (single-backend for now; multi-backend
+	// routing can be added later when we have multiple hosts with
+	// different labels).
+	backend := backends[0]
 
-	// Start reconciliation loop
-	ctx, cancel := context.WithCancel(context.Background())
+	logger.Info("backend registered",
+		"name", backend.Name(),
+		"type", backend.Type(),
+		"max_runners", backend.MaxRunners(),
+		"labels", backend.Labels(),
+	)
+
+	// Create scaleset client
+	scalesetClient, err := createScalesetClient(cfg)
+	if err != nil {
+		logger.Error("create scaleset client", "error", err)
+		os.Exit(1)
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
-	go reconcileLoop(ctx, tracker, backends, provisioner.semaphore, logger)
 
-	// Handle shutdown signals
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+	// Create or get the runner scale set
+	scaleSet, err := scalesetClient.CreateRunnerScaleSet(ctx, &scaleset.RunnerScaleSet{
+		Name:          cfg.ScaleSetName,
+		RunnerGroupID: 1, // default runner group
+		Labels:        buildScaleSetLabels(cfg),
+		RunnerSetting: scaleset.RunnerSetting{
+			DisableUpdate: true,
+		},
+	})
+	if err != nil {
+		logger.Error("create runner scale set", "error", err)
+		os.Exit(1)
+	}
 
-	go func() {
-		if err := server.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Error("server error", "error", err)
-			os.Exit(1)
+	logger.Info("scale set registered",
+		"id", scaleSet.ID,
+		"name", scaleSet.Name,
+	)
+
+	defer func() {
+		logger.Info("deleting runner scale set", "id", scaleSet.ID)
+		if err := scalesetClient.DeleteRunnerScaleSet(context.WithoutCancel(ctx), scaleSet.ID); err != nil {
+			logger.Error("failed to delete runner scale set", "id", scaleSet.ID, "error", err)
 		}
 	}()
 
-	// Log backend summary
-	for _, b := range backends {
-		logger.Info("backend registered",
-			"name", b.Name(),
-			"type", b.Type(),
-			"max_runners", b.MaxRunners(),
-			"labels", b.Labels(),
-			"priority", b.Priority(),
-		)
+	// Create message session
+	hostname, err := os.Hostname()
+	if err != nil {
+		hostname = "exeunt-autoscaler"
 	}
+	sessionClient, err := scalesetClient.MessageSessionClient(ctx, scaleSet.ID, hostname)
+	if err != nil {
+		logger.Error("create message session", "error", err)
+		os.Exit(1)
+	}
+	defer sessionClient.Close(context.Background())
+
+	// Build the scaler
+	scaler := &Scaler{
+		logger: logger.WithGroup("scaler"),
+		runners: runnerState{
+			idle: make(map[string]struct{}),
+			busy: make(map[string]struct{}),
+		},
+		maxRunners:     backend.MaxRunners(),
+		runnerImage:    cfg.RunnerImage,
+		scaleSetID:     scaleSet.ID,
+		scalesetClient: scalesetClient,
+		backend:        backend,
+	}
+
+	defer scaler.shutdown(context.WithoutCancel(ctx))
+
+	// Start health/status HTTP server
+	startTime := time.Now()
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		resp := map[string]any{
+			"status":     "ok",
+			"uptime":     time.Since(startTime).String(),
+			"active_vms": scaler.runners.count(),
+			"max_vms":    scaler.maxRunners,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	})
+	mux.HandleFunc("GET /status", func(w http.ResponseWriter, _ *http.Request) {
+		scaler.runners.mu.Lock()
+		idle := len(scaler.runners.idle)
+		busy := len(scaler.runners.busy)
+		scaler.runners.mu.Unlock()
+		resp := map[string]any{
+			"idle":       idle,
+			"busy":       busy,
+			"total":      idle + busy,
+			"max_vms":    scaler.maxRunners,
+			"uptime":     time.Since(startTime).String(),
+			"scale_set":  scaleSet.Name,
+			"backend":    backend.Name(),
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	})
+	httpServer := &http.Server{
+		Addr:         fmt.Sprintf(":%d", cfg.Port),
+		Handler:      mux,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
+	}
+
+	go func() {
+		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("http server error", "error", err)
+		}
+	}()
+	defer httpServer.Shutdown(context.WithoutCancel(ctx))
 
 	logger.Info("autoscaler started",
 		"port", cfg.Port,
-		"repos", cfg.Repos,
-		"backends", len(backends),
+		"scale_set", cfg.ScaleSetName,
+		"max_runners", backend.MaxRunners(),
 		"image", cfg.RunnerImage,
 	)
 
-	sig := <-sigCh
-	logger.Info("shutting down", "signal", sig.String())
-
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer shutdownCancel()
-
-	if err := server.Shutdown(shutdownCtx); err != nil {
-		logger.Error("shutdown error", "error", err)
+	// Run the listener — this blocks until ctx is cancelled
+	l, err := listener.New(sessionClient, listener.Config{
+		ScaleSetID: scaleSet.ID,
+		MaxRunners: backend.MaxRunners(),
+		Logger:     logger.WithGroup("listener"),
+	})
+	if err != nil {
+		logger.Error("create listener", "error", err)
+		os.Exit(1)
 	}
 
-	cancel()
+	if err := l.Run(ctx, scaler); !errors.Is(err, context.Canceled) {
+		logger.Error("listener error", "error", err)
+		os.Exit(1)
+	}
+
 	logger.Info("autoscaler stopped")
+}
+
+func createScalesetClient(cfg *Config) (*scaleset.Client, error) {
+	return scaleset.NewClientWithPersonalAccessToken(
+		scaleset.NewClientWithPersonalAccessTokenConfig{
+			GitHubConfigURL:     cfg.RegistrationURL,
+			PersonalAccessToken: cfg.GitHubToken,
+		},
+	)
+}
+
+func buildScaleSetLabels(cfg *Config) []scaleset.Label {
+	labels := make([]scaleset.Label, len(cfg.ScaleSetLabels))
+	for i, name := range cfg.ScaleSetLabels {
+		labels[i] = scaleset.Label{Name: name}
+	}
+	return labels
 }
 
 func buildBackends(cfg *Config, ssh SSHExecutor, logger *slog.Logger) ([]Backend, error) {
@@ -119,111 +227,4 @@ func buildBackends(cfg *Config, ssh SSHExecutor, logger *slog.Logger) ([]Backend
 		return nil, fmt.Errorf("no backends configured")
 	}
 	return backends, nil
-}
-
-func reconcileLoop(ctx context.Context, tracker *Tracker, backends []Backend, semaphore chan struct{}, logger *slog.Logger) {
-	ticker := time.NewTicker(1 * time.Minute)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			reconcile(ctx, tracker, backends, semaphore, logger)
-		}
-	}
-}
-
-func reconcile(ctx context.Context, tracker *Tracker, backends []Backend, semaphore chan struct{}, logger *slog.Logger) {
-	// Build set of existing runners across all backends.
-	// Track which backends failed so we don't garbage-collect their VMs
-	// when we simply couldn't reach the backend.
-	existing := make(map[string]bool)          // vm name → exists in backend
-	backendByVM := make(map[string]Backend)    // vm name → backend that owns it
-	failedBackends := make(map[string]bool)
-	for _, b := range backends {
-		runners, err := b.ListRunners(ctx)
-		if err != nil {
-			logger.Error("reconcile: list runners", "backend", b.Name(), "error", err)
-			failedBackends[b.Name()] = true
-			continue
-		}
-		for _, name := range runners {
-			existing[name] = true
-			backendByVM[name] = b
-		}
-	}
-
-	// Snapshot tracked VMs once — used for both forward and reverse passes.
-	activeVMs := tracker.ActiveVMs()
-
-	// Build set of tracked VM names for reverse lookup.
-	tracked := make(map[string]bool)
-	for _, record := range activeVMs {
-		tracked[record.VMName] = true
-	}
-
-	// releaseAndRemove removes a tracked entry and releases its semaphore slot.
-	// Reconcile bypasses the Provisioner, so it must release the semaphore
-	// directly to avoid deadlocking future provisioning.
-	releaseAndRemove := func(jobID int64) {
-		tracker.Remove(jobID)
-		select {
-		case <-semaphore:
-		default:
-		}
-	}
-
-	// Forward: remove tracker entries for runners that no longer exist,
-	// but skip VMs on backends we couldn't reach.
-	const staleTimeout = 2 * time.Minute
-	now := time.Now().UTC()
-	for _, record := range activeVMs {
-		if failedBackends[record.Backend] {
-			logger.Debug("reconcile: skipping VM on unreachable backend",
-				"vm", record.VMName, "backend", record.Backend)
-			continue
-		}
-		if !existing[record.VMName] {
-			logger.Warn("reconcile: runner no longer exists, removing from tracker",
-				"vm", record.VMName, "job_id", record.JobID, "backend", record.Backend)
-			releaseAndRemove(record.JobID)
-			continue
-		}
-
-		// Stale check: if a runner has been in "ready" status for too long,
-		// the runner process likely exited (completed a different job or crashed)
-		// while the container is still alive. Destroy it.
-		if record.Status == StatusReady {
-			created, err := time.Parse(time.RFC3339, record.CreatedAt)
-			if err == nil && now.Sub(created) > staleTimeout {
-				logger.Warn("reconcile: runner stuck in ready, destroying",
-					"vm", record.VMName, "job_id", record.JobID,
-					"age", now.Sub(created).Round(time.Second))
-				b := backendByVM[record.VMName]
-				if b != nil {
-					if err := b.DestroyRunner(ctx, record.VMName); err != nil {
-						logger.Error("reconcile: failed to destroy stale runner",
-							"vm", record.VMName, "error", err)
-					}
-				}
-				releaseAndRemove(record.JobID)
-			}
-		}
-	}
-
-	// Reverse: destroy orphaned VMs that exist in the backend but aren't tracked.
-	// These leak from failed provisioning, tracker state loss, or autoscaler restarts.
-	for vmName, b := range backendByVM {
-		if tracked[vmName] {
-			continue
-		}
-		logger.Warn("reconcile: destroying orphaned runner",
-			"vm", vmName, "backend", b.Name())
-		if err := b.DestroyRunner(ctx, vmName); err != nil {
-			logger.Error("reconcile: failed to destroy orphan",
-				"vm", vmName, "error", err)
-		}
-	}
 }

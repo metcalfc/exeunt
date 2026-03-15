@@ -31,9 +31,9 @@ func unsetEnv(t *testing.T, key string) {
 
 func setRequiredEnv(t *testing.T) {
 	t.Helper()
-	setEnv(t, "AUTOSCALER_WEBHOOK_SECRET", "test-secret")
 	setEnv(t, "AUTOSCALER_GITHUB_TOKEN", "ghp_test")
-	setEnv(t, "AUTOSCALER_REPOS", "metcalfc/exeunt")
+	setEnv(t, "AUTOSCALER_REGISTRATION_URL", "https://github.com/metcalfc")
+	setEnv(t, "AUTOSCALER_SCALE_SET_NAME", "exe")
 	// Point to nonexistent config file so it uses defaults
 	setEnv(t, "AUTOSCALER_CONFIG", "/tmp/nonexistent-autoscaler-config.json")
 }
@@ -55,12 +55,15 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.LogLevel != "info" {
 		t.Errorf("log_level = %q, want info", cfg.LogLevel)
 	}
-	// Default backend
-	if len(cfg.Backends) != 1 {
-		t.Fatalf("backends = %d, want 1", len(cfg.Backends))
+	if cfg.ScaleSetName != "exe" {
+		t.Errorf("scale_set_name = %q, want exe", cfg.ScaleSetName)
 	}
-	if cfg.Backends[0].Type != "exedev" {
-		t.Errorf("default backend type = %q, want exedev", cfg.Backends[0].Type)
+	if cfg.RegistrationURL != "https://github.com/metcalfc" {
+		t.Errorf("registration_url = %q, want https://github.com/metcalfc", cfg.RegistrationURL)
+	}
+	// Default labels = scale set name
+	if len(cfg.ScaleSetLabels) != 1 || cfg.ScaleSetLabels[0] != "exe" {
+		t.Errorf("labels = %v, want [exe]", cfg.ScaleSetLabels)
 	}
 }
 
@@ -69,6 +72,7 @@ func TestLoadConfigOverrides(t *testing.T) {
 	setEnv(t, "AUTOSCALER_PORT", "9090")
 	setEnv(t, "AUTOSCALER_RUNNER_IMAGE", "custom:latest")
 	setEnv(t, "AUTOSCALER_LOG_LEVEL", "debug")
+	setEnv(t, "AUTOSCALER_SCALE_SET_LABELS", "exe,exe-gpu")
 
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -81,6 +85,12 @@ func TestLoadConfigOverrides(t *testing.T) {
 	if cfg.RunnerImage != "custom:latest" {
 		t.Errorf("image = %q, want custom:latest", cfg.RunnerImage)
 	}
+	if len(cfg.ScaleSetLabels) != 2 {
+		t.Fatalf("labels = %v, want 2", cfg.ScaleSetLabels)
+	}
+	if cfg.ScaleSetLabels[0] != "exe" || cfg.ScaleSetLabels[1] != "exe-gpu" {
+		t.Errorf("labels = %v, want [exe exe-gpu]", cfg.ScaleSetLabels)
+	}
 }
 
 func TestLoadConfigMissingRequired(t *testing.T) {
@@ -88,9 +98,9 @@ func TestLoadConfigMissingRequired(t *testing.T) {
 		name  string
 		unset string
 	}{
-		{"missing webhook secret", "AUTOSCALER_WEBHOOK_SECRET"},
 		{"missing github token", "AUTOSCALER_GITHUB_TOKEN"},
-		{"missing repos", "AUTOSCALER_REPOS"},
+		{"missing registration url", "AUTOSCALER_REGISTRATION_URL"},
+		{"missing scale set name", "AUTOSCALER_SCALE_SET_NAME"},
 	}
 
 	for _, tt := range tests {
@@ -116,49 +126,6 @@ func TestLoadConfigInvalidPort(t *testing.T) {
 	}
 }
 
-func TestRepoAllowed(t *testing.T) {
-	cfg := &Config{
-		Repos: []string{"metcalfc/exeunt", "abrihq/*"},
-	}
-
-	tests := []struct {
-		name    string
-		repo    string
-		allowed bool
-	}{
-		{"exact match", "metcalfc/exeunt", true},
-		{"glob match", "abrihq/frontend", true},
-		{"glob match another", "abrihq/backend-api", true},
-		{"no match", "other/repo", false},
-		{"partial match not glob", "metcalfc/other", false},
-		{"empty repo", "", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := cfg.RepoAllowed(tt.repo); got != tt.allowed {
-				t.Errorf("RepoAllowed(%q) = %v, want %v", tt.repo, got, tt.allowed)
-			}
-		})
-	}
-}
-
-func TestRepoAllowedMultiplePatterns(t *testing.T) {
-	cfg := &Config{
-		Repos: []string{"metcalfc/*", "abrihq/*", "specific/repo"},
-	}
-
-	if !cfg.RepoAllowed("metcalfc/anything") {
-		t.Error("expected metcalfc/* to match")
-	}
-	if !cfg.RepoAllowed("specific/repo") {
-		t.Error("expected exact match for specific/repo")
-	}
-	if cfg.RepoAllowed("unknown/repo") {
-		t.Error("expected no match for unknown/repo")
-	}
-}
-
 func TestLoadConfigFromFile(t *testing.T) {
 	setRequiredEnv(t)
 
@@ -166,10 +133,11 @@ func TestLoadConfigFromFile(t *testing.T) {
 	configPath := dir + "/config.json"
 
 	configJSON := `{
-		"repos": ["fileorg/filerepo"],
+		"registration_url": "https://github.com/testorg",
+		"scale_set_name": "test-set",
+		"scale_set_labels": ["exe", "linux"],
 		"port": 3000,
 		"runner_image": "custom-from-file:v2",
-		"state_file": "/tmp/test-state.json",
 		"log_level": "debug",
 		"backends": [
 			{
@@ -184,16 +152,20 @@ func TestLoadConfigFromFile(t *testing.T) {
 	os.WriteFile(configPath, []byte(configJSON), 0o644)
 
 	setEnv(t, "AUTOSCALER_CONFIG", configPath)
-	// Unset AUTOSCALER_REPOS so config file repos are used
-	unsetEnv(t, "AUTOSCALER_REPOS")
+	// Unset env overrides so config file values are used
+	unsetEnv(t, "AUTOSCALER_REGISTRATION_URL")
+	unsetEnv(t, "AUTOSCALER_SCALE_SET_NAME")
 
 	cfg, err := LoadConfig()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(cfg.Repos) != 1 || cfg.Repos[0] != "fileorg/filerepo" {
-		t.Errorf("repos = %v, want [fileorg/filerepo]", cfg.Repos)
+	if cfg.RegistrationURL != "https://github.com/testorg" {
+		t.Errorf("registration_url = %q, want https://github.com/testorg", cfg.RegistrationURL)
+	}
+	if cfg.ScaleSetName != "test-set" {
+		t.Errorf("scale_set_name = %q, want test-set", cfg.ScaleSetName)
 	}
 	if cfg.Port != 3000 {
 		t.Errorf("port = %d, want 3000", cfg.Port)
@@ -201,17 +173,11 @@ func TestLoadConfigFromFile(t *testing.T) {
 	if cfg.RunnerImage != "custom-from-file:v2" {
 		t.Errorf("image = %q, want custom-from-file:v2", cfg.RunnerImage)
 	}
-	if cfg.LogLevel != "debug" {
-		t.Errorf("log_level = %q, want debug", cfg.LogLevel)
-	}
 	if len(cfg.Backends) != 1 {
 		t.Fatalf("backends = %d, want 1", len(cfg.Backends))
 	}
 	if cfg.Backends[0].Name != "file-backend" {
 		t.Errorf("backend name = %q, want file-backend", cfg.Backends[0].Name)
-	}
-	if cfg.Backends[0].MaxRunners != 3 {
-		t.Errorf("max_runners = %d, want 3", cfg.Backends[0].MaxRunners)
 	}
 }
 
@@ -227,53 +193,5 @@ func TestLoadConfigInvalidConfigFile(t *testing.T) {
 	_, err := LoadConfig()
 	if err == nil {
 		t.Error("expected error for invalid JSON config file")
-	}
-}
-
-func TestLoadConfigStateFileOverride(t *testing.T) {
-	setRequiredEnv(t)
-	setEnv(t, "AUTOSCALER_STATE_FILE", "/custom/state.json")
-
-	cfg, err := LoadConfig()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.StateFile != "/custom/state.json" {
-		t.Errorf("state_file = %q, want /custom/state.json", cfg.StateFile)
-	}
-}
-
-func TestLoadConfigReposGlob(t *testing.T) {
-	setRequiredEnv(t)
-
-	dir := t.TempDir()
-	configPath := dir + "/config.json"
-
-	configJSON := `{
-		"repos": ["metcalfc/*", "abrihq/*"]
-	}`
-	os.WriteFile(configPath, []byte(configJSON), 0o644)
-
-	setEnv(t, "AUTOSCALER_CONFIG", configPath)
-	unsetEnv(t, "AUTOSCALER_REPOS")
-
-	cfg, err := LoadConfig()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if len(cfg.Repos) != 2 {
-		t.Fatalf("repos = %d, want 2", len(cfg.Repos))
-	}
-
-	// Verify the glob patterns are preserved as-is (used by RepoAllowed)
-	if !cfg.RepoAllowed("metcalfc/anything") {
-		t.Error("expected metcalfc/* to match")
-	}
-	if !cfg.RepoAllowed("abrihq/something") {
-		t.Error("expected abrihq/* to match")
-	}
-	if cfg.RepoAllowed("other/repo") {
-		t.Error("expected other/repo to not match")
 	}
 }
