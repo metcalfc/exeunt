@@ -47,7 +47,11 @@ func LoadConfig() (*Config, error) {
 		configPath = "/etc/exeunt-autoscaler/config.json"
 	}
 
-	if data, err := os.ReadFile(configPath); err == nil {
+	data, readErr := os.ReadFile(configPath)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return nil, fmt.Errorf("read config file %s: %w", configPath, readErr)
+	}
+	if readErr == nil {
 		var cf ConfigFile
 		if err := json.Unmarshal(data, &cf); err != nil {
 			return nil, fmt.Errorf("parse config file %s: %w", configPath, err)

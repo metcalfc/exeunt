@@ -28,7 +28,7 @@ func NewDockerBackend(cfg BackendConfig, defaultImage string, logger *slog.Logge
 	}
 	user := cfg.User
 	if user == "" {
-		user = "root"
+		user = "exedev"
 	}
 	return &DockerBackend{
 		name:       cfg.Name,
@@ -77,7 +77,7 @@ func (b *DockerBackend) CreateRunner(ctx context.Context, name, image string) er
 	// The container starts with a sleep; StartRunner will exec the actual runner.
 	cmd := fmt.Sprintf(
 		"docker pull %s && docker run -d --user exedev --name %s --hostname %s --workdir /home/exedev --device /dev/net/tun --cap-add net_admin %s sleep infinity",
-		image, name, name, image,
+		shellQuote(image), shellQuote(name), shellQuote(name), shellQuote(image),
 	)
 	b.logger.Info("creating docker runner", "host", b.host, "name", name)
 	if _, err := b.sshRun(ctx, cmd); err != nil {

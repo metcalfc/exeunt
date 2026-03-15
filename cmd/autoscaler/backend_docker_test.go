@@ -37,9 +37,9 @@ func TestNewDockerBackend(t *testing.T) {
 		if b.image != "default:latest" {
 			t.Errorf("image = %q, want %q", b.image, "default:latest")
 		}
-		// Default user should be root
-		if b.user != "root" {
-			t.Errorf("user = %q, want %q", b.user, "root")
+		// Default user should be exedev (non-root policy)
+		if b.user != "exedev" {
+			t.Errorf("user = %q, want %q", b.user, "exedev")
 		}
 	})
 
@@ -84,14 +84,13 @@ func TestDockerBackendSSHTarget(t *testing.T) {
 		}
 	})
 
-	t.Run("default user root@host", func(t *testing.T) {
+	t.Run("default user exedev@host", func(t *testing.T) {
 		b := NewDockerBackend(BackendConfig{
 			Name: "test",
 			Host: "myhost",
 		}, "img:latest", logger)
-		// Default user is "root", so sshTarget should be root@myhost
-		if got := b.sshTarget(); got != "root@myhost" {
-			t.Errorf("sshTarget() = %q, want %q", got, "root@myhost")
+		if got := b.sshTarget(); got != "exedev@myhost" {
+			t.Errorf("sshTarget() = %q, want %q", got, "exedev@myhost")
 		}
 	})
 

@@ -18,10 +18,44 @@ type Scaler struct {
 	logger         *slog.Logger
 	runners        runnerState
 	maxRunners     int
+	capacity       *SharedCapacity // shared across all scalers
 	runnerImage    string
 	scaleSetID     int
 	scalesetClient *scaleset.Client
 	backend        Backend
+}
+
+// SharedCapacity enforces a hard limit on total runners across all scalers.
+type SharedCapacity struct {
+	mu      sync.Mutex
+	current int
+	max     int
+}
+
+func NewSharedCapacity(max int) *SharedCapacity {
+	return &SharedCapacity{max: max}
+}
+
+// TryAcquire attempts to reserve n slots. Returns the number actually acquired (0 to n).
+func (c *SharedCapacity) TryAcquire(n int) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	avail := c.max - c.current
+	if avail <= 0 {
+		return 0
+	}
+	got := min(n, avail)
+	c.current += got
+	return got
+}
+
+func (c *SharedCapacity) Release(n int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.current -= n
+	if c.current < 0 {
+		c.current = 0
+	}
 }
 
 var _ listener.Scaler = (*Scaler)(nil)
@@ -31,27 +65,36 @@ func (s *Scaler) HandleDesiredRunnerCount(ctx context.Context, count int) (int, 
 	targetRunnerCount := min(s.maxRunners, count)
 
 	switch {
-	case targetRunnerCount == currentCount:
+	case targetRunnerCount <= currentCount:
+		// Scale down is handled by JobCompleted removing runners.
 		return currentCount, nil
-	case targetRunnerCount > currentCount:
-		scaleUp := targetRunnerCount - currentCount
+	default:
+		wanted := targetRunnerCount - currentCount
+		// Acquire shared capacity — may get fewer slots than wanted
+		// if other scale sets are using the backend.
+		got := s.capacity.TryAcquire(wanted)
+		if got == 0 {
+			s.logger.Warn("backend at capacity, cannot scale up",
+				slog.Int("wanted", wanted))
+			return currentCount, nil
+		}
+
 		s.logger.Info("scaling up",
 			slog.Int("current", currentCount),
-			slog.Int("target", targetRunnerCount),
-			slog.Int("creating", scaleUp))
+			slog.Int("wanted", wanted),
+			slog.Int("acquired", got))
 
-		for range scaleUp {
+		created := 0
+		for range got {
 			if _, err := s.startRunner(ctx); err != nil {
 				s.logger.Error("failed to start runner", "error", err)
-				// Return current count — don't fail the whole batch
+				// Release unused capacity
+				s.capacity.Release(got - created)
 				return s.runners.count(), nil
 			}
+			created++
 		}
 		return s.runners.count(), nil
-	default:
-		// Scale down is handled by JobCompleted removing runners.
-		// The listener delivers JobCompleted for cancelled jobs too.
-		return currentCount, nil
 	}
 }
 
@@ -77,7 +120,13 @@ func (s *Scaler) HandleJobCompleted(ctx context.Context, jobInfo *scaleset.JobCo
 
 	if err := s.backend.DestroyRunner(ctx, vmName); err != nil {
 		s.logger.Error("failed to destroy runner", "vm", vmName, "error", err)
+		// Release capacity even on destroy failure — the runner is done
+		// from GitHub's perspective, and the container will be cleaned up
+		// by the monitor or manual intervention.
+		s.capacity.Release(1)
+		return fmt.Errorf("destroy runner %s: %w", vmName, err)
 	}
+	s.capacity.Release(1)
 	return nil
 }
 
@@ -128,6 +177,7 @@ func (s *Scaler) shutdown(ctx context.Context) {
 			s.logger.Error("failed to remove idle runner", "vm", name, "error", err)
 		}
 	}
+	s.capacity.Release(len(s.runners.idle))
 	clear(s.runners.idle)
 
 	for name := range s.runners.busy {
@@ -136,6 +186,7 @@ func (s *Scaler) shutdown(ctx context.Context) {
 			s.logger.Error("failed to remove busy runner", "vm", name, "error", err)
 		}
 	}
+	s.capacity.Release(len(s.runners.busy))
 	clear(s.runners.busy)
 }
 

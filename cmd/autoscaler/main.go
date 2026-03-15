@@ -63,11 +63,8 @@ func main() {
 		hostname = "exeunt-autoscaler"
 	}
 
-	// Per-runner capacity is split evenly across scale sets.
-	maxPerSet := backend.MaxRunners() / len(cfg.ScaleSets)
-	if maxPerSet < 1 {
-		maxPerSet = 1
-	}
+	// Shared capacity across all scale sets.
+	capacity := NewSharedCapacity(backend.MaxRunners())
 
 	// Register all scale sets and build scalers.
 	type scaleSetInstance struct {
@@ -121,7 +118,7 @@ func main() {
 
 		l, err := listener.New(session, listener.Config{
 			ScaleSetID: ss.ID,
-			MaxRunners: maxPerSet,
+			MaxRunners: backend.MaxRunners(),
 			Logger:     ssLog.WithGroup("listener"),
 		})
 		if err != nil {
@@ -135,7 +132,8 @@ func main() {
 				idle: make(map[string]struct{}),
 				busy: make(map[string]struct{}),
 			},
-			maxRunners:     maxPerSet,
+			maxRunners:     backend.MaxRunners(),
+			capacity:       capacity,
 			runnerImage:    cfg.RunnerImage,
 			scaleSetID:     ss.ID,
 			scalesetClient: client,
@@ -217,6 +215,7 @@ func main() {
 	go func() {
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("http server error", "error", err)
+			cancel()
 		}
 	}()
 	defer httpServer.Shutdown(context.WithoutCancel(ctx))
