@@ -6,109 +6,119 @@
 
 *"Exeunt all."* — stage direction for when everyone leaves.
 
-Self-hosted GitHub Actions runners that provision themselves. A webhook-based autoscaler spins up runners on your own hardware, runs the job, and tears them down. Your servers go first (they're free and fast). If they're busy or offline, [exe.dev](https://exe.dev) cloud VMs pick up the slack.
+Self-hosted GitHub Actions runners that provision themselves. A [Runner Scale Set](https://docs.github.com/en/actions/concepts/runners/runner-scale-sets) autoscaler spins up runners on your own hardware, runs the job, and tears them down. No Kubernetes required — just Linux boxes with Docker and [Tailscale](https://tailscale.com).
 
 No setup actions, no provisioning jobs, no teardown steps. Just `runs-on`:
 
 ```yaml
 jobs:
   build:
-    runs-on: [self-hosted, exe]
+    runs-on: exe
     steps:
       - uses: actions/checkout@v5
       - run: make test
 ```
 
-The runner image comes with Go, Python, Ruby, Rust, Node, and a pile of CLI tools pre-installed via [mise](https://mise.jdx.dev). Networking between your servers and exe.dev VMs goes through [Tailscale](https://tailscale.com), authenticated with GitHub OIDC so there are no long-lived secrets to rotate.
+The runner image comes with Go, Python, Ruby, Rust, Node, and a pile of CLI tools pre-installed via [mise](https://mise.jdx.dev). Networking between your servers goes through [Tailscale](https://tailscale.com).
 
 ## How it works
 
-Pick names for your machines. We like pufferfish (the logo, you see) — `porcupine`, `hedgehog`, `balloonfish` — but anything works.
-
 ```
-                    GitHub
-                  workflow_job
-                   webhook
-                      │
-                      ▼
-              ┌───────────────┐
-              │  Autoscaler   │  porcupine.exe.xyz
-              │  /webhook     │  (exe.dev VM, always on)
-              └───────┬───────┘
-                      │
-            Tailscale │ routes by label + priority
-              mesh    │
-         ┌────────────┼────────────┐
-         ▼            │            ▼
-   ┌───────────┐      │     ┌───────────┐
-   │ hedgehog  │      │     │  exe.dev  │
-   │ Docker    │◄─────┘     │  VMs      │
-   │ pri: 1    │            │  pri: 10  │
-   │ FREE      │            │  fallback │
-   └───────────┘            └───────────┘
-    your hardware             cloud VMs
+            GitHub Actions
+            Scale Set API
+           (long-poll session)
+                  │
+                  ▼
+          ┌───────────────┐
+          │  Autoscaler   │  exeunt.exe.xyz
+          │  (listener)   │  (exe.dev VM)
+          └───────┬───────┘
+                  │
+        Tailscale │ SSH
+           mesh   │
+                  ▼
+          ┌───────────────┐
+          │  boxloader    │
+          │  Docker       │  your hardware
+          │  16 CPU / 62G │
+          └───────────────┘
 ```
 
-The autoscaler receives `workflow_job` webhooks from GitHub. When a job with the `exe` label is queued, it provisions a runner on the best available backend, registers it as an ephemeral JIT runner, and destroys it when the job finishes. If a backend fails mid-provisioning, the next one picks it up automatically.
+The autoscaler uses GitHub's [Runner Scale Set API](https://github.com/actions/scaleset) (`github.com/actions/scaleset`) — the same API that powers [Actions Runner Controller](https://github.com/actions/actions-runner-controller), but without Kubernetes.
 
-## Labels
+1. **Registration**: Creates a scale set per repo with a name (e.g., `exe`) that workflows target via `runs-on: exe`
+2. **Polling**: Long-poll message session with GitHub — receives job assignments, start/complete events
+3. **Provisioning**: Spins up Docker containers on your hardware via Tailscale SSH
+4. **Job binding**: GitHub assigns specific jobs to specific runners at JIT config time — no job stealing
+5. **Cleanup**: Destroys the container when the job finishes
 
-| Label | Where it runs | When to use it |
-|-------|---------------|----------------|
-| `exe` | Best available — your servers first, exe.dev if needed | Default. Works for everything. |
-| `exe-large` | Bare metal only | Heavy builds that need real CPU/RAM |
-| `exe-gpu` | Bare metal with GPU | GPU workloads |
-| `exe-builder` | Persistent VM (not autoscaled) | Image builds where Docker cache matters |
+Multiple scale sets run concurrently in a single process, sharing backend capacity. Supports multiple repos across different GitHub orgs.
 
-## Getting started
+## Adding a server
 
-You need a server with Docker, an [exe.dev](https://exe.dev) account, and a [Tailscale](https://tailscale.com) tailnet.
+Probe your hardware and generate config:
 
-The full setup is in [docs/setup.md](docs/setup.md) — it walks through preparing your server, creating the autoscaler VM, configuring Tailscale OIDC, and wiring up the webhook.
-
-Once running, see [docs/operations.md](docs/operations.md) for deploying, monitoring, upgrading, and adding more servers.
-
-## Composite actions (no autoscaler)
-
-If you'd rather not run the autoscaler, the repo includes composite actions for manual provisioning. This means three jobs per workflow (provision, work, teardown) instead of one, and only works with exe.dev (not bare metal).
-
-```yaml
-jobs:
-  provision:
-    runs-on: ubuntu-latest
-    outputs:
-      vm_name: ${{ steps.setup.outputs.vm_name }}
-    steps:
-      - uses: actions/checkout@v5
-      - uses: your-org/exeunt/setup-exe-runner@main
-        id: setup
-        with:
-          exe-ssh-key: ${{ secrets.EXE_SSH_KEY }}
-          github-token: ${{ secrets.GH_RUNNER_TOKEN }}
-
-  work:
-    needs: provision
-    runs-on: [self-hosted, exe]
-    steps:
-      - uses: actions/checkout@v5
-      - run: make test
-
-  teardown:
-    runs-on: ubuntu-latest
-    needs: [provision, work]
-    if: always()
-    steps:
-      - uses: actions/checkout@v5
-      - uses: your-org/exeunt/teardown-exe-runner@main
-        with:
-          exe-ssh-key: ${{ secrets.EXE_SSH_KEY }}
-          vm-name: ${{ needs.provision.outputs.vm_name }}
+```bash
+scripts/add-host.sh <hostname>
 ```
 
-| Action | Inputs |
-|--------|--------|
-| `setup-exe-runner` | `exe-ssh-key` (required), `github-token` (required), `labels` (default: `exe`), `image` (default: runner image) |
-| `teardown-exe-runner` | `exe-ssh-key` (required), `vm-name` (required) |
+This SSHs to the host, checks CPU/RAM/disk/GPU, calculates runner capacity (75% of resources, 25% reserved for the host), and updates `deploy/config.local.json`.
+
+## Configuration
+
+```json
+{
+  "scale_sets": [
+    {
+      "registration_url": "https://github.com/your-org/your-repo",
+      "name": "exe",
+      "labels": ["exe", "exe-gpu"]
+    }
+  ],
+  "runner_image": "ghcr.io/metcalfc/exeunt-runner:latest",
+  "backends": [
+    {
+      "name": "boxloader",
+      "type": "docker",
+      "host": "boxloader",
+      "user": "metcalfc",
+      "max_runners": 6,
+      "labels": ["exe", "exe-gpu"]
+    }
+  ]
+}
+```
+
+Environment variables:
+- `AUTOSCALER_GITHUB_TOKEN` — PAT with `repo` and `admin:org` scopes (required)
+- `AUTOSCALER_CONFIG` — path to config file (default: `/etc/exeunt-autoscaler/config.json`)
+
+## Deploying
+
+```bash
+make deploy              # build, upload, restart autoscaler
+make deploy-monitor      # deploy the health monitor (5-min timer)
+make deploy-alert-responder  # deploy email-triggered Claude investigation
+make deploy-all          # all of the above
+make status              # check autoscaler status
+make logs                # tail autoscaler logs
+```
+
+## Monitoring
+
+A systemd timer runs health checks every 5 minutes and emails alerts:
+
+- Autoscaler process health and HTTP endpoint
+- Error rate spikes (>10 errors in 10 min)
+- Boxloader connectivity and disk space
+- Orphaned containers (containers not tracked by the autoscaler)
+
+Alerts go to email with `[exeunt]` subject prefix. Forward an alert to `alerts@exeunt.exe.xyz` to trigger an automated Claude investigation that diagnoses the issue and replies with findings.
+
+## Claude Code commands
+
+- `/debug-runner` — investigate a stuck or failed CI job
+- `/health-check` — proactive infrastructure audit
 
 ## License
 
