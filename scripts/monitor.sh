@@ -11,9 +11,6 @@ AUTOSCALER_URL="http://localhost:8080"
 HOST=$(hostname)
 TIMESTAMP=$(date -u '+%Y-%m-%d %H:%M UTC')
 
-# Managed repos
-REPOS=("metcalfc/exeunt" "metcalfc/exeuntu" "abrihq/den")
-
 # Track alert state to avoid spamming — only alert on transitions.
 mkdir -p "$STATE_DIR"
 
@@ -50,15 +47,13 @@ To investigate, forward this email to: alerts@exeunt.exe.xyz"
   fi
 }
 
-# --- Gather context once for richer alerts ---
+# --- Gather context ---
 uptime_info=$(uptime 2>/dev/null | sed 's/^ *//' || echo "unknown")
 healthz=$(curl -sf --max-time 5 "$AUTOSCALER_URL/healthz" 2>/dev/null || echo '{}')
+status_json=$(curl -sf --max-time 5 "$AUTOSCALER_URL/status" 2>/dev/null || echo '{}')
 active_vms=$(echo "$healthz" | jq -r '.active_vms // "?"')
 max_vms=$(echo "$healthz" | jq -r '.max_vms // "?"')
-autoscaler_uptime=$(echo "$healthz" | jq -r '.uptime // "?"')
-
-tracker_json=$(cat /var/lib/exeunt-autoscaler/state.json 2>/dev/null || echo '[]')
-tracker_count=$(echo "$tracker_json" | jq 'length' 2>/dev/null || echo "0")
+scale_sets=$(echo "$healthz" | jq -r '.scale_sets // "?"')
 
 problems=()
 
@@ -98,7 +93,7 @@ else
   alert_once "autoscaler-unhealthy" \
     "[exeunt] CRITICAL: autoscaler not responding" \
 "The autoscaler process may be running but is not responding to
-HTTP requests. It may be hung or crashed.
+HTTP requests. The scale set listeners may be hung.
 
   Host:   $HOST
   Time:   $TIMESTAMP
@@ -113,25 +108,25 @@ fi
 # =========================================================================
 # Check 3: Error rate spike
 # =========================================================================
-error_count=$(journalctl -u exeunt-autoscaler --since "10 min ago" --no-pager 2>/dev/null \
-  | grep -c '"level":"ERROR"' || true)
+error_lines=$(journalctl -u exeunt-autoscaler --since "10 min ago" --no-pager 2>/dev/null \
+  | grep '"level":"ERROR"' || true)
+error_count=$(echo "$error_lines" | grep -c '"level":"ERROR"' 2>/dev/null || echo "0")
 if [[ "$error_count" -gt 10 ]]; then
   problems+=("$error_count errors in last 10 min")
-  recent_errors=$(journalctl -u exeunt-autoscaler --since '10 min ago' --no-pager 2>/dev/null \
-    | grep '"level":"ERROR"' | tail -5 | while read -r line; do
-      msg=$(echo "$line" | grep -o '"msg":"[^"]*"' | head -1)
-      err=$(echo "$line" | grep -o '"error":"[^"]*"' | head -1)
-      echo "  - $msg $err"
-    done)
+  recent_errors=$(echo "$error_lines" | tail -5 | while read -r line; do
+    msg=$(echo "$line" | grep -o '"msg":"[^"]*"' | head -1)
+    err=$(echo "$line" | grep -o '"error":"[^"]*"' | head -1)
+    echo "  - $msg $err"
+  done)
   alert_once "autoscaler-errors" \
     "[exeunt] WARNING: error spike ($error_count errors in 10 min)" \
 "The autoscaler is generating errors at a high rate.
 
-  Host:      $HOST
-  Time:      $TIMESTAMP
-  Errors:    $error_count in last 10 minutes
-  Uptime:    $autoscaler_uptime
-  Active:    $active_vms / $max_vms runners
+  Host:       $HOST
+  Time:       $TIMESTAMP
+  Errors:     $error_count in last 10 minutes
+  Active:     $active_vms / $max_vms runners
+  Scale sets: $scale_sets
 
 RECENT ERRORS:
 $recent_errors
@@ -148,9 +143,9 @@ if tailscale ssh metcalfc@boxloader "true" 2>/dev/null; then
   clear_alert "boxloader-unreachable"
 
   # --- Check 5: Boxloader disk space ---
-  disk_pct=$(tailscale ssh metcalfc@boxloader "df / --output=pcent | tail -1 | tr -d ' %'" 2>/dev/null || echo "0")
-  docker_df=$(tailscale ssh metcalfc@boxloader "docker system df --format 'table {{.Type}}\t{{.Size}}\t{{.Reclaimable}}'" 2>/dev/null || echo "unavailable")
-  if [[ "$disk_pct" -gt 85 ]]; then
+  disk_pct=$(tailscale ssh metcalfc@boxloader "df / --output=pcent | tail -1 | tr -d ' %'" 2>/dev/null || echo "unknown")
+  if [[ "$disk_pct" =~ ^[0-9]+$ ]] && [[ "$disk_pct" -gt 85 ]]; then
+    docker_df=$(tailscale ssh metcalfc@boxloader "docker system df --format 'table {{.Type}}\t{{.Size}}\t{{.Reclaimable}}'" 2>/dev/null || echo "unavailable")
     problems+=("boxloader disk at ${disk_pct}%")
     alert_once "boxloader-disk" \
       "[exeunt] WARNING: boxloader disk at ${disk_pct}%" \
@@ -165,7 +160,6 @@ $docker_df
 
 TO FIX:
   ssh boxloader 'docker system prune -f'
-  ssh boxloader 'docker image prune -a -f'
 
 Or forward this email to: alerts@exeunt.exe.xyz"
   else
@@ -173,39 +167,41 @@ Or forward this email to: alerts@exeunt.exe.xyz"
   fi
 
   # --- Check 6: Orphaned containers ---
-  tracker_vms=$(echo "$tracker_json" | jq -r '.[].vm_name' 2>/dev/null | sort || true)
+  # The scale set autoscaler tracks runners in memory. Get the list
+  # from the /status endpoint and compare with actual containers.
+  scaler_vms=$(echo "$status_json" | jq -r '.scale_sets[]?.idle // empty, .scale_sets[]?.busy // empty' 2>/dev/null | sort || true)
   backend_vms=$(tailscale ssh metcalfc@boxloader \
     "docker ps --filter name=exeunt- --format '{{.Names}}\t{{.Status}}'" 2>/dev/null || true)
-  backend_names=$(echo "$backend_vms" | awk '{print $1}' | sort || true)
-
-  orphans=""
+  backend_names=$(echo "$backend_vms" | awk '{print $1}' | grep -v '^$' | sort || true)
+  backend_count=0
   if [[ -n "$backend_names" ]]; then
-    orphans=$(comm -23 <(echo "$backend_names") <(echo "$tracker_vms") || true)
+    backend_count=$(echo "$backend_names" | wc -l | tr -d ' ')
   fi
 
-  if [[ -n "$orphans" ]]; then
-    orphan_count=$(echo "$orphans" | wc -l | tr -d ' ')
-    orphan_detail=$(for name in $orphans; do
-      echo "$backend_vms" | grep "^$name" || echo "  $name (status unknown)"
-    done)
+  # Simple check: if there are more containers than the autoscaler reports,
+  # some are orphaned.
+  reported_total=$(echo "$status_json" | jq -r '[.scale_sets[]? | (.idle + .busy)] | add // 0' 2>/dev/null || echo "0")
+
+  if [[ "$backend_count" -gt 0 ]] && [[ "$backend_count" -gt "$reported_total" ]]; then
+    orphan_count=$((backend_count - reported_total))
     problems+=("$orphan_count orphaned containers")
     alert_once "orphaned-containers" \
       "[exeunt] WARNING: $orphan_count orphaned container(s) on boxloader" \
 "Containers exist on boxloader but are not tracked by the autoscaler.
-The reconciler should clean these up within 5 minutes.
 
-  Host:     boxloader
-  Time:     $TIMESTAMP
-  Tracked:  $tracker_count entries
-  Backend:  $(echo "$backend_names" | wc -l | tr -d ' ') containers
-  Orphaned: $orphan_count
+  Host:      boxloader
+  Time:      $TIMESTAMP
+  Tracked:   $reported_total runners
+  Backend:   $backend_count containers
+  Orphaned:  $orphan_count
 
-ORPHANED CONTAINERS:
-$orphan_detail
+CONTAINERS:
+$backend_vms
 
-If this persists, the reconciler may be broken.
+If this persists, restart the autoscaler:
+  ssh exeunt.exe.xyz 'sudo systemctl restart exeunt-autoscaler'
 
-Forward this email to: alerts@exeunt.exe.xyz"
+Or forward this email to: alerts@exeunt.exe.xyz"
   else
     clear_alert "orphaned-containers"
   fi
@@ -224,58 +220,10 @@ $ts_status
 
 POSSIBLE CAUSES:
   - Boxloader machine is offline or rebooting
-  - Tailscale ACLs changed (need exeunt -> boxloader SSH)
+  - Tailscale ACLs changed
   - Tailscale service down on boxloader
 
 Or forward this email to: alerts@exeunt.exe.xyz"
-fi
-
-# =========================================================================
-# Check 7: Stale tracker entries
-# =========================================================================
-stale_entries=()
-if [[ "$tracker_json" != "[]" ]]; then
-  now=$(date +%s)
-  while IFS= read -r line; do
-    created=$(echo "$line" | jq -r '.created_at' 2>/dev/null || true)
-    status=$(echo "$line" | jq -r '.status' 2>/dev/null || true)
-    vm=$(echo "$line" | jq -r '.vm_name' 2>/dev/null || true)
-    repo=$(echo "$line" | jq -r '.repo' 2>/dev/null || true)
-    job_id=$(echo "$line" | jq -r '.job_id' 2>/dev/null || true)
-    if [[ "$status" == "ready" && -n "$created" ]]; then
-      created_epoch=$(date -d "$created" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%SZ" "$created" +%s 2>/dev/null || echo "0")
-      age=$(( now - created_epoch ))
-      if [[ "$age" -gt 600 ]]; then
-        age_min=$(( age / 60 ))
-        stale_entries+=("  $vm  repo=$repo  job=$job_id  age=${age_min}m  status=$status")
-      fi
-    fi
-  done < <(jq -c '.[]' <<< "$tracker_json" 2>/dev/null || true)
-fi
-
-if [[ ${#stale_entries[@]} -gt 0 ]]; then
-  stale_count=${#stale_entries[@]}
-  stale_detail=$(printf '%s\n' "${stale_entries[@]}")
-  problems+=("$stale_count stale tracker entries")
-  alert_once "stale-tracker" \
-    "[exeunt] WARNING: $stale_count stale tracker entries" \
-"Runner entries stuck in 'ready' for >10 min. The runner process likely
-exited but the container is still alive. The reconciler should clean
-these up automatically.
-
-  Host:    $HOST
-  Time:    $TIMESTAMP
-  Tracked: $tracker_count total, $stale_count stale
-
-STALE ENTRIES:
-$stale_detail
-
-If this persists, restart the autoscaler:
-  ssh exeunt.exe.xyz 'sudo systemctl restart exeunt-autoscaler'
-
-Or forward this email to: alerts@exeunt.exe.xyz"
-else
-  clear_alert "stale-tracker"
 fi
 
 # =========================================================================
@@ -283,8 +231,8 @@ fi
 # =========================================================================
 if [[ ${#problems[@]} -eq 0 ]]; then
   echo "OK — all checks passed ($TIMESTAMP)"
-  echo "  autoscaler: up $autoscaler_uptime, $active_vms/$max_vms runners"
-  echo "  tracker:    $tracker_count entries"
+  echo "  autoscaler: $active_vms/$max_vms runners, $scale_sets scale sets"
+  echo "  boxloader:  ${disk_pct:-?}% disk"
 else
   echo "PROBLEMS (${#problems[@]}) at $TIMESTAMP:"
   for p in "${problems[@]}"; do
